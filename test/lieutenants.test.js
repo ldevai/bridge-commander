@@ -248,7 +248,9 @@ test('cli: lieutenant create --avatar and lieutenant patch', async () => {
 
     r = await runCli(['lieutenant', 'patch', 'avi', '--avatar', '9', '--color', '#abcdef', ...args]);
     assert.strictEqual(r.code, 0, r.stderr);
-    assert.match(r.stdout, /lieutenant avi updated \(avatar=9 color=#abcdef prefix=AVI\)/);
+    // The line reports what it runs on too — 'none'/'default' for a lieutenant
+    // registered without a session and pinned to no model.
+    assert.match(r.stdout, /lieutenant avi updated \(avatar=9 color=#abcdef prefix=AVI harness=none model=default\)/);
 
     r = await runCli(['lieutenant', 'patch', 'avi', '--avatar', 'none', ...args]);
     assert.strictEqual(r.code, 0, r.stderr);
@@ -272,7 +274,10 @@ test('cli: lieutenant create writes the charter to the memory file, and list rea
 
     r = await runCli(['lieutenant', 'list', ...args]);
     assert.strictEqual(r.code, 0, r.stderr);
-    assert.match(r.stdout, /ada\tAda\t#58b6ff\tADA-1\tOwn the API surface\./);
+    // …and what it runs on, between the next id and the charter's first line.
+    // '-' because this one was registered without a session, and a harness is a
+    // property of the session it runs in.
+    assert.match(r.stdout, /ada\tAda\t#58b6ff\tADA-1\t-\tOwn the API surface\./);
 
     // --charter-file wrote the memory file, and the board record stayed clean
     assert.strictEqual(fs.readFileSync(charterPath(s.dir, 'ada'), 'utf8'),
