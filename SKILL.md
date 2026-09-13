@@ -19,8 +19,10 @@ Some skill installers copy only this file. Resolve the tool checkout, in order:
    `git clone https://github.com/tonylampada/bridge-commander.git ~/.local/share/bridge-commander`
 
 `bc-axi` is the board CLI at `<checkout>/cli/bc-axi` (use PATH if available; run it bare for
-full usage). `DOCTRINE.md` and `OPERATIONS.md` live in the checkout root — read them from
-there, not next to this file, unless this dir is the tool.
+full usage). `<checkout>/cli/bc` is the same program under the captain's name — `bc start`,
+`bc stop`, `bc agents` — and that is what you tell the USER to run when they ask how to bring
+the board up again later. `DOCTRINE.md` and `OPERATIONS.md` live in the checkout root — read
+them from there, not next to this file, unless this dir is the tool.
 
 ## 1. Which of the two runs is this?
 

@@ -27,7 +27,12 @@ function runFrom(cwd, home, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], {
       cwd,
-      env: Object.assign({}, process.env, { HOME: home }),
+      // HOME AND the XDG base: with the default fleet living at
+      // ~/.config/bridge-commander, a leaked XDG_CONFIG_HOME would let the
+      // developer's own fleet answer for a test about finding none.
+      env: Object.assign({}, process.env, {
+        HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), BC_FLEET: '',
+      }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '', stderr = '';
@@ -110,7 +115,7 @@ test('the harness state home never hijacks init: a NEW workspace is created unde
     // $HOME was not adopted. (init would then bootstrap the cwd itself.)
     const r = await runFrom(fleet, home, ['config', 'show']);
     assert.equal(r.code, 1, 'no workspace found — $HOME was not hijacked');
-    assert.match(r.stderr, /no workspace found/);
+    assert.match(r.stderr, /no fleet found/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -123,6 +128,6 @@ test('fresh machine: ancestors with only non-qualifying state dirs resolve to no
     fs.mkdirSync(cwd, { recursive: true });
     const r = await runFrom(cwd, home, ['config', 'show']);
     assert.equal(r.code, 1, 'nothing qualifies → no workspace, so init bootstraps the cwd');
-    assert.match(r.stderr, /no workspace found/);
+    assert.match(r.stderr, /no fleet found/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });

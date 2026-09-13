@@ -149,8 +149,12 @@ function paneExists(session, window, opts) {
 // numeric name would be parsed by tmux as a window INDEX (papercut #8).
 async function claimPaneNames(opts = {}) {
   const session = opts.session || newSessionName();
-  if (!/^bc-[A-Za-z0-9_-]+$/.test(session)) {
-    throw new Error(`invalid session name "${session}" (must match bc-<id>)`);
+  // A session name has to be safe for tmux (no dots, no colons) and has to
+  // start with a letter so tmux never reads it as an index. It no longer has to
+  // start with `bc-`: a fleet names its own sessions (fleet.js / names.js), and
+  // the default stem is `bridge-commander` precisely so a person can type it.
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(session)) {
+    throw new Error(`invalid session name "${session}" (letters, digits, _ and -, starting with a letter)`);
   }
   const window = opts.window === undefined || opts.window === null ? undefined : String(opts.window);
   if (window !== undefined && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(window)) {

@@ -770,7 +770,7 @@ async function respawnFresh(lt, harness) {
   const impl = getHarness(harness || lt.ref.harness);
   // Keep the session name (an incarnation, not a new entity) when it is
   // spawnable; a founder's foreign name gets a workspace-scoped one.
-  const session = /^bc-[A-Za-z0-9_-]+$/.test(lt.ref.session)
+  const session = names.isOurSession(WORKSPACE, lt.ref.session)
     ? lt.ref.session : names.lieutenantSession(WORKSPACE, lt.id);
   const window = lt.ref.window || names.LIEUTENANT_WINDOW;
   try { await harnessFor(lt.ref).kill({ ...lt.ref, window }); }
@@ -2257,7 +2257,7 @@ function ownerSession(card) {
   const lt = board.lieutenants.find((l) => l.id === card.owner);
   // Mirror the supervision respawn rule: a founder's foreign session name is
   // not spawnable — those workers get the workspace-scoped lieutenant name.
-  return lt && isHarnessRef(lt.ref) && /^bc-[A-Za-z0-9_-]+$/.test(lt.ref.session)
+  return lt && isHarnessRef(lt.ref) && names.isOurSession(WORKSPACE, lt.ref.session)
     ? lt.ref.session
     : names.lieutenantSession(WORKSPACE, card.owner);
 }
@@ -4718,6 +4718,56 @@ const server = http.createServer(async (req, res) => {
         session: await sessionState(l),
       })));
       return sendJson(res, 200, { lieutenants });
+    }
+    // ----- the roster: every agent process this board believes it owns -----
+    // The one question a restart leaves open — "is anything still RUNNING?" —
+    // and the board never answered it in one place. Lieutenants live in their
+    // own tmux sessions, workers in windows inside them, and both survive a
+    // server restart untouched: the refs are on disk, so a fresh server picks
+    // the same sessions back up rather than orphaning them. This route is that
+    // fact, made checkable. `live=1` probes each pane through its harness (a
+    // shell-out per agent, so it is asked for, never paid by default).
+    if (route === 'GET /api/agents') {
+      const live = /^(1|true)$/.test(url.searchParams.get('live') || '');
+      const probe = async (ref) => {
+        if (!isHarnessRef(ref)) return 'none';
+        if (!live) return 'unknown';
+        try { return (await harnessFor(ref).alive(ref)) ? 'live' : 'dead'; }
+        catch (e) { return 'dead'; }
+      };
+      const lieutenants = await Promise.all(board.lieutenants.map(async (l) => ({
+        id: l.id, name: l.name,
+        harness: (l.ref && l.ref.harness) || null,
+        model: l.model || null,
+        session: (l.ref && l.ref.session) || null,
+        window: (l.ref && l.ref.window) || null,
+        address: isHarnessRef(l.ref) ? refKey(l.ref) : null,
+        cards: board.cards.filter((c) => c.owner === l.id).length,
+        state: await probe(l.ref),
+      })));
+      const workers = await Promise.all(board.workers.map(async (w) => {
+        const card = findCard(w.card);
+        return {
+          card: w.card,
+          title: card ? card.title : null,
+          column: card ? card.column : null,
+          owner: card ? card.owner : null,
+          harness: (w.ref && w.ref.harness) || null,
+          session: (w.ref && w.ref.session) || null,
+          window: (w.ref && w.ref.window) || null,
+          address: isHarnessRef(w.ref) ? workerName(w.ref) : null,
+          worktree: (w.worktree && w.worktree.path) || null,
+          done: !!w.done, paused: !!w.paused,
+          state: await probe(w.ref),
+        };
+      }));
+      return sendJson(res, 200, {
+        workspace: WORKSPACE,
+        tmux: names.sessionBase(WORKSPACE),
+        named: !!names.configuredSessionBase(WORKSPACE),
+        probed: live,
+        lieutenants, workers,
+      });
     }
     if (route === 'POST /api/lieutenants') {
       const body = JSON.parse(await readBody(req) || '{}');

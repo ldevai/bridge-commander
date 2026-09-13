@@ -22,6 +22,9 @@ const SELF_DIR = path.dirname(fs.realpathSync(process.argv[1]));
 const SERVER_JS = process.env.BC_SERVER_JS || path.join(SELF_DIR, '..', 'server', 'server.js');
 const { STATE_DIR_NAME, LEGACY_STATE_DIR_NAME, migrateStateDir, resolveStateDir, migrateHomeStateDir, isWorkspace } =
   require(path.join(SELF_DIR, '..', 'server', 'statedir.js'));
+// Where a fleet lives when nobody said, and what its tmux sessions are called.
+const fleet = require(path.join(SELF_DIR, '..', 'server', 'fleet.js'));
+const names = require(path.join(SELF_DIR, '..', 'server', 'names.js'));
 const gitrev = require(path.join(SELF_DIR, '..', 'server', 'gitrev.js'));
 // The playbooks a workspace is seeded with, and the worker-duties skill that
 // goes with them — one call, because they are one thing (see playbooks.js).
@@ -33,6 +36,11 @@ const { seedHooks } = require(path.join(SELF_DIR, '..', 'server', 'hooks.js'));
 // charter is prose the agent reads at launch (see server/charter.js).
 const { charterPath, readCharter, writeCharter } = require(path.join(SELF_DIR, '..', 'server', 'charter.js'));
 const DEFAULT_PORT = 4780;
+// The name this binary was CALLED by. `bc` is the captain's door (start / stop /
+// status / agents) and `bc-axi` the agent's full CLI; they are one program, so
+// every message it prints names the door the caller actually used.
+const PROG = path.basename(process.argv[1] || 'bc-axi');
+const SHORT_DOOR = PROG !== 'bc-axi';
 
 function die(msg) { console.error(msg); process.exit(1); }
 
@@ -65,6 +73,7 @@ const opts = {
   card: null, trigger: null, key: null, source: null, limit: 0,
   onboard: false, here: false, allowRoot: false,
   hook: null, when: null, overlap: null, catchup: null,
+  session: null, all: false, agents: false,
 };
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -99,6 +108,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--onboard') opts.onboard = true;
   else if (a === '--here') opts.here = true;
   else if (a === '--allow-root') opts.allowRoot = true;
+  else if (a === '--session') opts.session = argv[++i];
+  else if (a === '--all') opts.all = true;
+  else if (a === '--agents') opts.agents = true;
   else if (a === '--harness') opts.harness = argv[++i];
   else if (a === '--model') opts.model = argv[++i];
   else if (a === '--effort') opts.effort = argv[++i];
@@ -162,10 +174,42 @@ function stateDirLive(dir) {
     return true;
   } catch (e) { return false; }
 }
-const WORKSPACE = opts.workspace
-  ? path.resolve(opts.workspace)
-  : (cmd === 'open' || cmd === 'init' ? (findWorkspace(process.cwd()) || process.cwd()) : findWorkspace(process.cwd()));
-if (!WORKSPACE) die('no workspace found: no ' + STATE_DIR_NAME + '/ from cwd upward (run `bc-axi init` to start one here, or pass --workspace)');
+// `start` takes the fleet directory as a bare positional — `bc start ~/dev/fleet`
+// is the whole override, no flag to remember. It is read off the positionals
+// BEFORE the verb dispatches, so the command itself never sees it.
+const START_DIR = (cmd === 'start' && positional.length && !positional[0].startsWith('-'))
+  ? positional.shift() : null;
+const DEFAULT_FLEET = fleet.defaultFleetDir();
+
+// Which workspace this call acts on, in the one order that keeps every existing
+// invocation doing exactly what it did:
+//   --workspace / `start <dir>`   an answer given out loud
+//   $BC_FLEET                     an answer given once, for a whole shell
+//   .bridge-commander/ from cwd   the answer this CLI has always used
+//   the default fleet             ~/.config/bridge-commander — so `bc` works
+//                                 from anywhere, and `bc start` FOUNDS it there
+// `open`/`init` keep their own last resort (cwd): they are the verbs that turn
+// the directory you are standing in into a workspace, and always have been.
+function resolveWorkspace() {
+  if (opts.workspace) return path.resolve(opts.workspace);
+  if (START_DIR) return path.resolve(START_DIR);
+  if (String(process.env.BC_FLEET || '').trim()) return DEFAULT_FLEET;
+  const found = findWorkspace(process.cwd());
+  if (found) return found;
+  if (cmd === 'start') return DEFAULT_FLEET;
+  if (cmd === 'open' || cmd === 'init') return process.cwd();
+  return isWorkspace(DEFAULT_FLEET) ? DEFAULT_FLEET : null;
+}
+const RESOLVED = resolveWorkspace();
+// No fleet anywhere is not fatal HERE: the usage screen is the one thing a
+// person with no fleet at all needs to read, and it needs no workspace. The
+// verbs that do need one refuse at dispatch, with the sentence that tells them
+// how to make one.
+const NO_FLEET = !RESOLVED;
+const WORKSPACE = RESOLVED || DEFAULT_FLEET;
+const NO_FLEET_MSG = 'no fleet found: no ' + STATE_DIR_NAME + '/ from cwd upward, and no fleet at ' + DEFAULT_FLEET + '\n'
+  + '  `' + PROG + ' start` founds one there (or `' + PROG + ' start <dir>` somewhere else);\n'
+  + '  --workspace <dir> points this one call at an existing fleet.';
 // One-shot rename migrations (bridge-command → bridge-commander), idempotent and
 // guarded so a running legacy server is left alone.
 const migratedState = migrateStateDir(WORKSPACE, stateDirLive);
@@ -337,6 +381,142 @@ async function cmdOpen() {
   console.log((started ? 'started' : 'already running') + ' workspace=' + st.workspace + ' cards=' + st.cards);
 }
 
+// ---------- start / stop: the captain's two verbs ----------
+// `bc start` is the whole entry point: it founds a fleet if there is none,
+// brings the server up if it is down, and then SAYS what is running — which
+// tmux stem the fleet answers to and which agents are still in their sessions.
+// Nothing about it needs a cd, a port, or a remembered flag.
+let FOUNDING = false;
+
+// settleSessionName — decide, once, what this fleet's tmux sessions are called,
+// and write it down. A name in config.json is the only thing that makes a
+// session name guessable across restarts, so it is settled BEFORE anything
+// spawns.
+//
+// A fleet that already runs under the derived `bc-<disc>` names is left alone
+// unless the captain asks with --session: renaming the stem does not rename the
+// sessions living under the old one (refs are recorded per lieutenant), so a
+// silent rename would split one fleet across two naming schemes for no reason
+// anybody asked for.
+function settleSessionName(fresh) {
+  const cfg = readConfig();
+  let wanted = null;
+  if (opts.session != null) {
+    wanted = fleet.sanitizeSessionName(opts.session);
+    if (!wanted) die('--session must start with a letter and hold only letters, digits, _ and - (tmux forbids . and :)');
+  }
+  if (!wanted) {
+    if (cfg.tmuxSession) return String(cfg.tmuxSession);
+    if (!fresh) return null; // an existing fleet keeps the names its agents already answer to
+    wanted = fleet.DEFAULT_TMUX_SESSION;
+  }
+  const claim = fleet.claimSessionName(WORKSPACE, wanted, names.workspaceDisc(WORKSPACE));
+  if (claim.conflict) {
+    console.error('tmux name "' + wanted + '" is already claimed by the fleet at ' + claim.conflict
+      + '\n  this one uses "' + claim.name + '" instead (pass --session <name> to pick your own)');
+  }
+  if (!fresh && cfg.tmuxSession !== claim.name) {
+    console.error('tmux stem set to "' + claim.name + '" — lieutenants already living in a session keep theirs;'
+      + '\n  the new name takes effect for the next one spawned.');
+  }
+  writeConfigKeys({ tmuxSession: claim.name });
+  return claim.name;
+}
+
+// The roster, read off the server: every agent process this board believes it
+// owns, and whether its pane is actually there. `/api/agents` is newer than
+// some servers on disk, so a 404 is answered with the reason rather than a
+// stack trace — the board is up either way.
+async function readRoster(live) {
+  try { return await request('GET', '/api/agents' + (live ? '?live=1' : ''), null, 60000); }
+  catch (e) {
+    if (/HTTP 404/.test(e.message)) {
+      return { stale: 'this server predates the agent roster — restart it to read one' };
+    }
+    return { stale: 'could not read the roster: ' + e.message };
+  }
+}
+
+function pad(s, n) { s = String(s == null ? '' : s); return s + ' '.repeat(Math.max(0, n - s.length)); }
+
+// printRoster — the answer to "is anything still running?", in one screen.
+// Session names are printed in full because they are the address: a captain who
+// wants to watch an agent types `tmux attach -t <that>`.
+function printRoster(r) {
+  if (!r || r.stale) { console.log('agents: ' + ((r && r.stale) || 'unknown')); return; }
+  console.log('tmux:   ' + r.tmux + (r.named ? '' : '  (derived — `' + PROG + ' start --session <name>` pins a readable one)'));
+  const rows = [];
+  for (const l of r.lieutenants) {
+    rows.push(['lieutenant', l.id, l.state, l.harness || '-', l.address || '(no session)',
+      l.cards + ' card' + (l.cards === 1 ? '' : 's')]);
+  }
+  for (const w of r.workers) {
+    const what = (w.column ? w.column : 'off-board') + (w.paused ? ', paused' : (w.done ? ', done' : ''));
+    rows.push(['worker', w.card, w.state, w.harness || '-', w.address || '(no session)', what]);
+  }
+  if (!rows.length) { console.log('agents: none — no lieutenant and no worker on this board'); return; }
+  const w0 = Math.max(...rows.map((x) => x[0].length));
+  const w1 = Math.max(...rows.map((x) => x[1].length));
+  const w2 = Math.max(...rows.map((x) => x[2].length));
+  const w3 = Math.max(...rows.map((x) => x[3].length));
+  const w4 = Math.max(...rows.map((x) => x[4].length));
+  console.log('agents:');
+  for (const x of rows) {
+    console.log('  ' + pad(x[0], w0) + '  ' + pad(x[1], w1) + '  ' + pad(x[2], w2) + '  '
+      + pad(x[3], w3) + '  ' + pad(x[4], w4) + '  ' + x[5]);
+  }
+  const dead = rows.filter((x) => x[2] === 'dead').length;
+  if (r.probed && dead) {
+    console.log('  ' + dead + ' dead — a lieutenant respawns on the next supervision tick; a dead worker'
+      + ' needs `bc-axi card start <id> --resume` or `bc-axi card park <id>`');
+  }
+}
+
+async function cmdAgents() {
+  const st = await serverUp();
+  if (!st) die('server: down (fleet ' + WORKSPACE + ', port ' + PORT + ') — `' + PROG + ' start` brings it up');
+  const r = await readRoster(true);
+  if (opts.json) return console.log(JSON.stringify(r, null, 2));
+  printRoster(r);
+}
+
+async function cmdFleetStart() {
+  const fresh = !isWorkspace(WORKSPACE);
+  if (fresh) {
+    // A fleet directory nobody made yet is not an error — founding it IS the
+    // command. Only the DEFAULT one is created silently; a directory the
+    // captain named and misspelled should say so rather than appear.
+    if (!fs.existsSync(WORKSPACE)) {
+      if (START_DIR || opts.workspace) {
+        die('no such directory: ' + WORKSPACE + ' (create it first, or run `' + PROG + ' start` for the default fleet at ' + DEFAULT_FLEET + ')');
+      }
+      fs.mkdirSync(WORKSPACE, { recursive: true });
+    }
+    console.error('founding a new fleet at ' + WORKSPACE);
+    FOUNDING = true;
+    opts.onboard = true;
+    await cmdInitOnboard();
+    console.log('');
+    printRoster(await readRoster(true));
+    console.log('\nfleet:  ' + WORKSPACE + '\nstop:   ' + PROG + ' stop');
+    return;
+  }
+  settleSessionName(false);
+  await rebindIfAsked();
+  if (opts.host) writeConfigKeys({ host: opts.host }); // a bind that does not survive a restart is not a bind
+  const { st, started } = await ensureServer();
+  installStatusLine(WORKSPACE); // self-heal the statusLine wiring on every start
+  console.log('board:  ' + boardUrl(st.host));
+  console.log('fleet:  ' + st.workspace + '  (' + (started ? 'server started' : 'server already running')
+    + ', cards=' + st.cards + ')');
+  // The restart question, answered without being asked: sessions are recorded
+  // on the board, so a fresh server adopts the ones still standing instead of
+  // orphaning them. The roster is the proof.
+  printRoster(await readRoster(true));
+  const drift = driftLineFor(st);
+  if (drift) console.log('⚠ ' + drift);
+}
+
 // ---------- init: workspace.init — the teleport ----------
 // Mechanical half of the founding flow (the skill drives the agent half):
 // verify tmux, bootstrap .bridge-commander/, boot the server, register the CALLER
@@ -466,6 +646,7 @@ async function cmdInit() {
   // 2. state dir + server (detached, idempotent)
   fs.mkdirSync(STATE_DIR, { recursive: true });
   excludeFromGit(WORKSPACE, '.bridge-commander/');
+  settleSessionName(fresh); // a founding init names the fleet's tmux stem; a re-run leaves it
   const { started } = await ensureServer();
   console.log('server ' + (started ? 'started' : 'already running') + ' on port ' + PORT);
 
@@ -604,7 +785,7 @@ async function cmdInitOnboard() {
 
   // 1. What IS this directory? Decided before one byte is written, in the one
   //    order that works: workspace, then empty, then refuse and name what it found.
-  const target = opts.workspace ? path.resolve(opts.workspace) : process.cwd();
+  const target = (opts.workspace || START_DIR || FOUNDING) ? WORKSPACE : process.cwd();
   const look = fr.inspectTarget(target);
   if (look.verdict === 'missing') die('no such directory: ' + target);
   // WORKSPACE walks UP from cwd, so a folder inside an existing workspace
@@ -656,6 +837,10 @@ async function cmdInitOnboard() {
   // 3. The workspace itself.
   fs.mkdirSync(STATE_DIR, { recursive: true });
   excludeFromGit(WORKSPACE, '.bridge-commander/');
+  // AFTER the refusal above, never before it: settling the name writes
+  // config.json, and a directory with a config.json reads as a workspace — so a
+  // name settled early would turn "refuse this code project" into "adopt it".
+  settleSessionName(!resuming);
   if (PORT !== DEFAULT_PORT) writeConfigKeys({ port: PORT }); // so every later bc-axi call finds it
   if (opts.host) writeConfigKeys({ host: opts.host }); // …and so the next start keeps the bind
   await rebindIfAsked(); // a --host that arrives after the board is up still means it
@@ -757,7 +942,14 @@ async function cmdInitOnboard() {
   }
 
   console.log('\nboard: ' + boardUrl(bound));
-  if (live) {
+  // Two audiences, two closing lines. Reached through the skill, this is an
+  // AGENT being told to hand the URL over and stop; reached through `bc start`,
+  // it is the person themselves, who needs no instructions about handing
+  // anything to anyone.
+  if (live && FOUNDING) {
+    console.log('\n' + name + ' is on the board with a message already waiting — open that URL and talk\n'
+      + 'to her. The rest of the setup (tools, projects, the checklist) is hers.');
+  } else if (live) {
     console.log('\nGive that URL to the person and stop here. ' + name + ' is on the board with a message\n'
       + 'already waiting, and the rest of the setup — tools, projects, the checklist — is hers.');
   }
@@ -787,13 +979,68 @@ async function cmdOnboarding() {
   console.log('onboarding step: ' + r.onboarding.step);
 }
 
+// `bc stop` stops the SERVER, and says what it did not stop. Agent sessions are
+// tmux, not children of the server: they outlive it on purpose, and a fresh
+// server adopts them back off the board's recorded refs. That is the right
+// default and the least obvious one, so it is stated every time rather than
+// left for the captain to discover by finding claude still burning tokens.
+//
+// --all is the other half: stop the board AND end every agent session it knows
+// about. The server goes first — a supervision tick that ran between the kill
+// and the shutdown would respawn exactly what was just killed.
 async function cmdStop() {
+  const roster = (await serverUp()) ? await readRoster(true) : null;
   let pid = null;
   try { pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10); } catch (e) {}
   if (!pid) { const st = await serverUp(); pid = st && st.pid; }
-  if (!pid) die('no server found for workspace ' + WORKSPACE);
-  try { process.kill(pid, 'SIGTERM'); } catch (e) { die('failed to stop pid ' + pid + ': ' + e.message); }
-  console.log('stopped pid=' + pid);
+  if (!pid && !opts.all) die('no server running for the fleet at ' + WORKSPACE);
+  if (pid) {
+    try { process.kill(pid, 'SIGTERM'); } catch (e) { die('failed to stop pid ' + pid + ': ' + e.message); }
+    for (let i = 0; i < 40 && await serverUp(); i++) await sleep(100);
+    console.log('board stopped (pid ' + pid + ') — ' + WORKSPACE);
+  }
+  const live = liveSessions(roster);
+  if (opts.all) {
+    if (!live.length) { console.log('no agent session was left to end'); return; }
+    const ended = [];
+    const failed = [];
+    for (const name of live) {
+      try { execFileSync('tmux', ['kill-session', '-t', '=' + name], { stdio: 'ignore' }); ended.push(name); }
+      catch (e) { failed.push(name); }
+    }
+    if (ended.length) console.log('ended ' + ended.length + ' agent session(s): ' + ended.join(', '));
+    // A kill that did not land is the whole reason this command exists — saying
+    // "ended 3" over three sessions still burning tokens is the lie, not the
+    // failure. tmux is the only one that can end them, so it is named.
+    if (failed.length) {
+      console.log('could NOT end ' + failed.length + ' session(s): ' + failed.join(', ')
+        + '\n  end them by hand: tmux kill-session -t ' + failed[0]);
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (!roster || roster.stale) {
+    console.log('agent sessions: unknown (the board was already down — `tmux ls` lists them)');
+    return;
+  }
+  if (!live.length) { console.log('no agent session is running'); return; }
+  console.log(live.length + ' agent session(s) still running: ' + live.join(', ')
+    + '\n  they survive on purpose — the next `' + PROG + ' start` adopts them back.'
+    + '\n  `' + PROG + ' stop --all` ends them too.');
+}
+
+// The tmux SESSIONS behind a roster — deduplicated, because a worker is a window
+// inside its lieutenant's session and killing the session takes the windows with
+// it. Only sessions a probe actually found are listed: a dead ref names a
+// session that may not exist, and reporting it as running is the lie this whole
+// command exists to stop telling.
+function liveSessions(roster) {
+  if (!roster || roster.stale) return [];
+  const out = [];
+  for (const a of [...(roster.lieutenants || []), ...(roster.workers || [])]) {
+    if (a.state === 'live' && a.session && !out.includes(a.session)) out.push(a.session);
+  }
+  return out;
 }
 
 // ---------- lieutenants ----------
@@ -1789,11 +2036,18 @@ async function cmdStatus() {
     return console.log(id + ': ' + fmtStatus(r.status));
   }
   const st = await serverUp();
-  if (!st) { console.log('server: down (workspace ' + WORKSPACE + ', port ' + PORT + ')'); process.exit(1); }
+  if (!st) {
+    console.log('server: down (fleet ' + WORKSPACE + ', port ' + PORT + ') — `' + PROG + ' start` brings it up');
+    process.exit(1);
+  }
   const code = st.code || {};
   const codeTag = code.short ? code.short + (code.dirty ? '+dirty' : '') : 'unknown';
   console.log('server: up  workspace=' + st.workspace + '  cards=' + st.cards + '  lieutenants=' + st.lieutenants +
     '  pending-queue=' + st.queue_pending + '  code=' + codeTag + '  url=http://localhost:' + PORT + '/');
+  // Which agents are actually RUNNING is a probe per agent, so `status` names
+  // the door rather than paying for it — unless the caller asks with --agents.
+  if (opts.agents) printRoster(await readRoster(true));
+  else console.log('tmux:   ' + names.sessionBase(WORKSPACE) + '-lt-<lieutenant>   (`' + PROG + ' agents` probes what is live)');
   const drift = driftLineFor(st);
   if (drift) console.log('⚠ ' + drift);
 }
@@ -1804,6 +2058,21 @@ async function cmdConfig() {
   if (sub === 'show') {
     let raw; try { raw = fs.readFileSync(CONFIG_FILE, 'utf8').trim(); } catch (e) { raw = '{}'; }
     console.log(raw || '{}');
+    return;
+  }
+  if (sub === 'session') {
+    const wanted = positional[1];
+    if (!wanted) die('usage: ' + PROG + ' config session <name>   (the tmux stem: sessions are <name>-lt-<lieutenant>)');
+    const name = fleet.sanitizeSessionName(wanted);
+    if (!name) die('a tmux stem must start with a letter and hold only letters, digits, _ and - (tmux forbids . and :)');
+    const claim = fleet.claimSessionName(WORKSPACE, name, names.workspaceDisc(WORKSPACE));
+    if (claim.conflict) {
+      console.error('tmux name "' + name + '" is already claimed by the fleet at ' + claim.conflict
+        + ' — using "' + claim.name + '"');
+    }
+    writeConfigKeys({ tmuxSession: claim.name });
+    console.log('tmuxSession=' + claim.name
+      + '\n  lieutenants already in a session keep theirs; the next one spawned is ' + claim.name + '-lt-<id>');
     return;
   }
   if (sub === 'voices') {
@@ -1818,11 +2087,12 @@ async function cmdConfig() {
     console.log(names.length ? 'voices=' + names.join(',') : 'voices cleared');
     return;
   }
-  die('usage: bc-axi config <show | voices "<name,name,...>">');
+  die('usage: ' + PROG + ' config <show | session <name> | voices "<name,name,...>">');
 }
 
 const commands = {
   init: cmdInit,
+  start: cmdFleetStart, agents: cmdAgents,
   open: cmdOpen, stop: cmdStop, status: cmdStatus, config: cmdConfig,
   onboarding: cmdOnboarding,
   board: cmdBoard, thread: cmdThread, archived: cmdArchived, kinds: cmdKinds,
@@ -1847,8 +2117,31 @@ const commands = {
   line: cmdLine, 'line pass': cmdLinePass,
 };
 if (!commands[cmd]) {
+  // Two doors, two screens. `bc` is the captain's: four verbs, no flags to
+  // remember, and one line saying where the rest of the CLI is. Dumping the
+  // agent CLI's full reference on someone who typed `bc` is how the start
+  // instructions got lost in the first place.
+  if (SHORT_DOOR) {
+    const short = (PROG + ' — the bridge-commander fleet.\n' +
+      '\n' +
+      '  ' + PROG + ' start [<dir>]      found the fleet if there is none, bring the board up, print the\n' +
+      '                        URL and the agent roster. No dir = ' + DEFAULT_FLEET + '\n' +
+      '  ' + PROG + ' stop [--all]       stop the board. Agent sessions survive unless --all\n' +
+      '  ' + PROG + ' agents             every lieutenant and worker, its tmux address, and whether\n' +
+      '                        that pane is live right now\n' +
+      '  ' + PROG + ' status             up/down, cards, queue, and the commit the server booted from\n' +
+      '\n' +
+      'Flags worth knowing: --session NAME pins the tmux stem (default "' + fleet.DEFAULT_TMUX_SESSION + '", so a\n' +
+      'lieutenant lives at ' + fleet.DEFAULT_TMUX_SESSION + '-lt-<id> and `tmux attach -t` that name works);\n' +
+      '--port N and --host H bind the board; $BC_FLEET points every call at another fleet.\n' +
+      '\n' +
+      'Everything else — cards, lieutenants, playbooks, schedules — is `bc-axi`, the agent CLI.\n' +
+      'Run `bc-axi` bare for its reference.');
+    driftNote().then((n) => die(short + (n ? '\n\n⚠ ' + n : '')), () => die(short));
+  } else {
   const usage = ('bc-axi — agent CLI for the bridge-commander board.\n' +
-    'Workspace: nearest .bridge-commander/ from cwd upward, or --workspace DIR. Port: workspace config.json (default 4780), or --port N.\n' +
+    'Fleet: --workspace DIR, else $BC_FLEET, else the nearest .bridge-commander/ from cwd upward, else the\n' +
+    'default fleet at ' + DEFAULT_FLEET + '. Port: the fleet\'s config.json (default 4780), or --port N.\n' +
     'Bind host: config.json "host" (default 127.0.0.1 loopback), or --host H on init/open. Never 0.0.0.0 — there is no app auth.\n' +
     '\nserver & workspace:\n' +
     '  init --name N [--id id] [--charter-file f|-] [--port N] [--host H]\n' +
@@ -1868,13 +2161,26 @@ if (!commands[cmd]) {
     '                                         to launch an agent as uid 0 — ask the person for both\n' +
     '  onboarding [--json]                    the first-run step the board remembers\n' +
     '  onboarding set <step> [--note "..."]   advance it: board-up | tools | project | checklist | done\n' +
+    '  start [<dir>] [--session NAME] [--port N] [--host H] [--here] [--allow-root]\n' +
+    '                                         THE entry point. Founds the fleet if there is none, brings the\n' +
+    '                                         board up if it is down, then prints the URL and the agent\n' +
+    '                                         roster. No dir = the default fleet (' + DEFAULT_FLEET + '),\n' +
+    '                                         overridable with <dir>, --workspace or $BC_FLEET. A fleet it\n' +
+    '                                         FOUNDS is named: its tmux sessions are <session>-lt-<id>,\n' +
+    '                                         default "' + fleet.DEFAULT_TMUX_SESSION + '" (--session picks another; a name another\n' +
+    '                                         fleet already claimed gets a suffix rather than a collision)\n' +
+    '  agents [--json]                        the roster: every lieutenant and worker, its tmux address, and\n' +
+    '                                         whether that pane is actually live. Agents are tmux sessions,\n' +
+    '                                         not children of the board — they survive a restart and a fresh\n' +
+    '                                         server adopts them back off the recorded refs\n' +
     '  open [--port N] [--host H]             start the workspace server if needed (idempotent), print URL.\n' +
     '                                         Bootstraps .bridge-commander/ in cwd on first run.\n' +
-    '  status                                 up/down, cards, lieutenants, pending queue items, and the\n' +
+    '  status [--agents]                      up/down, cards, lieutenants, pending queue items, and the\n' +
     '                                         commit the server BOOTED from (code=). When the checkout has\n' +
     '                                         moved past it, one line names both commits and the restart —\n' +
     '                                         silence means the running server IS the code on disk\n' +
-    '  stop                                   stop the workspace server\n' +
+    '  stop [--all]                           stop the board server, and SAY which agent sessions it left\n' +
+    '                                         running (they survive on purpose). --all ends those too\n' +
     '\nlieutenant:\n' +
     '  lieutenant create --name N [--id id] [--color #rrggbb] [--avatar N] [--prefix ABC] [--charter-file f|-] [--spawn [--harness h]]\n' +
     '                                         register a lieutenant (color auto-assigned when omitted;\n' +
@@ -2064,7 +2370,9 @@ if (!commands[cmd]) {
     '                                         as a lease; past the TTL (default 600s) working/needs-you\n' +
     '                                         decays to idle; "status <card-id> absent" unlinks\n' +
     '\nconfig:\n' +
-    '  config show | config voices "a,b"      TTS voice filter for the UI\n' +
+    '  config show                            the fleet\'s config.json\n' +
+    '  config session <name>                  the tmux stem for sessions spawned from now on\n' +
+    '  config voices "a,b"                    TTS voice filter for the UI\n' +
     '\nText/body/charter always via --text-file/--body-file/--charter-file or stdin ("-"), never shell-interpolated.\n' +
     'The charter is not board state: --charter-file creates lieutenants/<id>/README.md in the workspace\n' +
     'when it is absent, and never replaces one — edit the file to change a charter.');
@@ -2072,6 +2380,9 @@ if (!commands[cmd]) {
   // stops reading: if the running server is behind its checkout, it says so
   // here. A down server, an unknown commit, or a match all print nothing extra.
   driftNote().then((n) => die(usage + (n ? '\n\n⚠ ' + n : '')), () => die(usage));
+  }
+} else if (NO_FLEET) {
+  die(NO_FLEET_MSG);
 } else {
   commands[cmd]().catch((e) => die(e.message));
 }

@@ -21,6 +21,10 @@ anything. It installs nothing, and it is safe to run again — a second run resu
 one stopped.
 
 `bc-axi` is at `<checkout>/cli/bc-axi`; SKILL.md step 0 tells you how to resolve the checkout.
+`<checkout>/cli/bc` is the same program under the captain's name: `bc start` does this whole
+first run in one command (founding the default fleet at `~/.config/bridge-commander` when no
+directory is given), and `bc start` / `bc stop` / `bc agents` are what the person runs from
+then on. Tell them that once the board is up — it is the question every first run leaves open.
 
 ## Rules that are not negotiable
 

@@ -5,6 +5,42 @@ to the tool itself. The doctrine governs how you orchestrate; this governs how y
 harness running under you. Read it when a restart, a deploy, or a wedged respawn is on your
 plate — not before.
 
+## Starting and stopping a board
+
+`bc start` / `bc stop` are the ordinary door, and they are what a human should be told to run:
+`bc start` founds the default fleet (`~/.config/bridge-commander`, or `bc start <dir>` /
+`$BC_FLEET`) if there is none, brings the server up if it is down, and prints the URL together
+with the agent roster. `bc stop` stops the board and NAMES the agent sessions it left running;
+`bc stop --all` ends those too, server first so no supervision tick respawns what was just killed.
+
+`bc` and `bc-axi` are one program behind two names — `bc` prints the four captain verbs, `bc-axi`
+the full agent reference.
+
+## Is anything still running?
+
+Lieutenants and workers are tmux sessions, not children of the server. They survive a restart on
+purpose: the refs live on the board, so a fresh server picks the same sessions back up rather than
+orphaning them (the boot sweep only closes worker windows whose card is off the board or out of
+Working — see the restart section below).
+
+`bc agents` is that fact made checkable — it probes every recorded ref through its harness and
+prints `live`, `dead` or `none` per agent, with the tmux address to attach to. `bc-axi status
+--agents` prints the same roster under the server line; `GET /api/agents?live=1` is the route
+behind both (without `live=1` it lists the refs without paying for a probe per agent).
+
+A `dead` lieutenant respawns on the next supervision tick. A `dead` worker does not — it is
+`bc-axi card start <id> --resume` (same worktree, recorded resumeId) or `bc-axi card park <id>`.
+
+Session names come from the fleet's `tmuxSession` stem: `<stem>-lt-<id>` for a lieutenant,
+`w-<card-id>` for a worker's window inside it. A fleet founded by `bc start` is named
+`bridge-commander`, so the addresses are guessable and `tmux attach -t bridge-commander-lt-<id>`
+works without looking anything up. A fleet that predates this keeps its derived `bc-<disc>` stem —
+that is the compatibility contract, since every session name already recorded in a board.json was
+built on it — and `bc-axi config session <name>` renames the stem for sessions spawned FROM NOW
+ON, never the ones already standing. The stem is claimed machine-wide in
+`~/.bridge-commander/sessions.json`, so a second fleet asking for a name gets a suffixed one
+instead of colliding inside tmux later.
+
 ## Reliable server restart
 
 `bc-axi`'s ensureServer boots the server detached with stdio ignored, so it can fail silently —
