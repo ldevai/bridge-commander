@@ -8,6 +8,7 @@ import { openCardThread, syncChatToMain } from './chat.js';
 import { openFile, closeFile, fileKey, fileDirty, fileMerges, fileResolve, fileUpdate, fileNotice } from './filepane.js';
 import { openMoveMenu } from './board.js';
 import { archivedCard, unarchive } from './archive.js';
+import { openCardPane } from './pane.js';
 
 const isDesktop = () => window.innerWidth > 760; // matches the chat.js layout breakpoint
 
@@ -56,6 +57,7 @@ function renderAux() {
   el.classList.remove('frozen');
   el.classList.add('dt-aux-on');
   document.getElementById('dt-talk').hidden = true;
+  document.getElementById('dt-live-work').hidden = true;
   document.getElementById('dt-menu-btn').hidden = true;
   document.getElementById('dt-unarch').hidden = true;
   const emojiEl = document.getElementById('dt-emoji');
@@ -170,6 +172,9 @@ document.getElementById('dt-talk').onclick = () => {
     closeDetail();
     openCardThread(id);
   }
+};
+document.getElementById('dt-live-work').onclick = () => {
+  if (S.openCardId) openCardPane(S.openCardId);
 };
 // ---------- the collapsed line, and the artifacts accordion ----------
 // Both are per-card view state, and the card viewer remembers nothing across
@@ -893,6 +898,9 @@ export function renderDetail() {
   const WORKER_STATES = { working: 1, 'needs-you': 1, idle: 1 };
   const w = cardStatus(c).worker;
   const worker = !arch && w && w.id && WORKER_STATES[w.state] ? w : null;
+  // The card pane is a live worker terminal. Do not offer a dead-looking
+  // control for an archived card or one whose worker lease is absent.
+  document.getElementById('dt-live-work').hidden = !worker;
   const rsn = arch && (arch.reason === 'merged' ? 'merged' : 'killed');
   setHtmlIfChanged(document.getElementById('dt-sub'),
     esc(c.id + ' · ' + c.type + ' · created ') + agoSpanHtml(c.created) + esc(' ago') +

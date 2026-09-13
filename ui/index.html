@@ -313,6 +313,10 @@
       <div class="dt-sub" id="dt-sub"></div>
     </div>
     <button id="dt-talk" title="talk in this card's thread">💬 talk</button>
+    <!-- Only appears while this card has a live worker. It opens the worker's
+         existing SSE terminal pane, so the captain can see work progressing
+         without leaving the card or polling a separate screen. -->
+    <button id="dt-live-work" title="watch this card's worker live" hidden>👁 work</button>
     <button id="dt-menu-btn" title="move / archive">⋯</button>
     <!-- archived snapshots only: the one action a frozen card offers -->
     <button id="dt-unarch" class="tv-unarch" hidden>🧟 unarchive</button>

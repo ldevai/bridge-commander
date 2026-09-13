@@ -889,6 +889,8 @@ body.resizing { user-select: none; cursor: col-resize; }
 .dt-worker-needs-you::before { background: var(--warn); }
 #dt-talk { flex: none; color: var(--accent); border: 1px solid var(--accent2); border-radius: 7px; padding: 4px 10px; font-size: 12px; }
 #dt-talk:hover { background: var(--accent-soft); }
+#dt-live-work { flex: none; color: var(--dim); border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; font-size: 12px; }
+#dt-live-work:hover { color: var(--accent); border-color: var(--accent2); background: var(--accent-soft); }
 #dt-menu-btn { flex: none; color: var(--dim); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; font-size: 13px; }
 #dt-menu-btn:hover { color: var(--accent); border-color: var(--accent2); }
 #dt-close { flex: none; color: var(--dim); font-size: 17px; padding: 2px 6px; }

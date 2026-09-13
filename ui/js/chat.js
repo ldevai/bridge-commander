@@ -12,6 +12,7 @@ import { avatarHtml } from './avatars.js';
 import { isEchoOf, addPending, pendingFor } from './pending.js';
 import { fileContextBlock } from './filectx.js';
 import { CHAT_KEY, CLOSED, encodeChat, decodeChat } from './chatmem.js';
+import { createDraftStore } from './chatdraft.js';
 import { slashOptions } from './slash.js';
 
 const feedEl = document.getElementById('chat-feed');
@@ -22,6 +23,17 @@ const ltMenuBtn = document.getElementById('chat-lt-menu');
 const backBtn = document.getElementById('chat-back');
 const openBtn = document.getElementById('chat-card-open');
 const inputEl = document.getElementById('chat-input');
+const drafts = createDraftStore();
+
+// The textarea is shared by every conversation. Move its text into the
+// outgoing target's slot, then show the incoming target's slot. A missing
+// slot intentionally renders as an empty (cleared) composer.
+function switchDraft(target) {
+  drafts.set(currentTarget(), inputEl.value);
+  inputEl.value = drafts.get(target);
+  autoGrow(inputEl);
+  closeSlash();
+}
 
 let detailOpener = null; // set by main.js to avoid a circular import
 export function onOpenCard(fn) { detailOpener = fn; }
@@ -80,6 +92,8 @@ function currentLieutenant() {
 
 // Open a lieutenant's main chat (switcher row tap, new-lieutenant create).
 export function openLieutenantChat(id) {
+  const target = 'lieutenant:' + id;
+  if (currentTarget() !== target) switchDraft(target);
   S.chatMode = { mode: 'lieutenant', id };
   S.view = 'chat'; // on mobile, switch to the chat tab
   render();
@@ -90,6 +104,8 @@ export function openLieutenantChat(id) {
 // here. opts.silent (desktop detail-sync) skips the mobile tab-switch and the
 // input focus, so selecting a card doesn't steal focus or flip the mobile tab.
 export function openCardThread(id, opts) {
+  const target = 'card:' + id;
+  if (currentTarget() !== target) switchDraft(target);
   S.chatMode = { mode: 'card', id };
   if (!(opts && opts.silent)) {
     S.view = 'chat'; // on mobile, switch to the chat tab
@@ -106,6 +122,8 @@ export function openCardThread(id, opts) {
 export function syncChatToMain() {
   if (S.chatMode && S.chatMode.mode === 'card') {
     const c = card(S.chatMode.id);
+    const target = c && lieutenant(c.owner) ? 'lieutenant:' + c.owner : null;
+    if (target) switchDraft(target);
     S.chatMode = c && lieutenant(c.owner) ? { mode: 'lieutenant', id: c.owner } : null;
     render();
   }
@@ -890,6 +908,7 @@ async function send() {
     // flags a stalled echo.
     addPending(target, text, metas);
     inputEl.value = '';
+    drafts.set(target, '');
     if (q) refreshQuote(); // re-arm from the screen: still there = still attached
     closeSlash();
     pendingAtts = [];
@@ -906,7 +925,10 @@ async function send() {
     autoGrow(inputEl);
   }
 }
-inputEl.oninput = () => { autoGrow(inputEl); clearSendError(); updateSlash(); };
+inputEl.oninput = () => {
+  drafts.set(currentTarget(), inputEl.value);
+  autoGrow(inputEl); clearSendError(); updateSlash();
+};
 // Enter inserts a newline; Cmd+Enter (mac) or Ctrl+Enter sends. With the slash
 // picker open, arrows/Tab/Enter drive the picker (Cmd/Ctrl+Enter still sends).
 inputEl.onkeydown = (e) => {
