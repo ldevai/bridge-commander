@@ -26,6 +26,23 @@ npx skills add tonylampada/bridge-commander -g -y
 
 That's it. The rest happens in the terminal you already have.
 
+**Want the `bc` command too?** One line, on a machine with nothing yet:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tonylampada/bridge-commander/main/install.sh | sh
+```
+
+It clones into `~/.local/share/bridge-commander` and symlinks `bc` and `bc-axi` into
+`~/.local/bin`. From a checkout you already have (the skill folder included), run its own
+installer instead — same symlinks, no second copy:
+
+```sh
+<checkout>/cli/bc-axi install          # --dir D for another bin dir, --uninstall to take it back
+```
+
+Both are links into the checkout, so updating it updates the commands. Neither edits a shell rc
+file: a bin directory that isn't on your `PATH` is reported with the one line that adds it.
+
 ## Start
 
 - Make an empty folder (e.g. `myfleet`) and start `claude` in it
@@ -39,8 +56,8 @@ rest of the setup with you.
 You need `tmux` and `git` on the machine (Bridget will offer to install if missing). 
 You never have to use tmux yourself, but you can if you want.
 
-Already have the checkout's `cli/` on your `PATH`? `bc start` does the same first run in one
-command, from any directory — it founds the default fleet and leaves Bridget on it.
+Already ran the `bc` installer above? `bc start` does the same first run in one command, from any
+directory — it founds the default fleet and leaves Bridget on it.
 
 ## Every time after that
 
@@ -53,7 +70,7 @@ bc stop       # stop the board — agent sessions keep running
 bc stop --all # …and end those too
 ```
 
-`bc` lives next to `bc-axi` at `<checkout>/cli/bc`; put that directory on your `PATH` once.
+Don't have `bc` yet? `<checkout>/cli/bc-axi install` puts it there — see [Install](#install).
 
 **Where the fleet lives.** With no argument, `bc start` uses — and founds, if it isn't there yet —
 the default fleet at `~/.config/bridge-commander` (`$XDG_CONFIG_HOME` is honoured). Override it per

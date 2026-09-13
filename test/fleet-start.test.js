@@ -313,3 +313,117 @@ test('bc start refuses to found a fleet inside a code project, and writes nothin
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// ---------- install: `bc` onto the PATH ----------
+// The layer under `bc start`: the tool ships as a skill folder or a checkout,
+// and until something puts it on the PATH the only way to run it is to remember
+// where it landed.
+test('bc install symlinks both names at this checkout, and is idempotent', async () => {
+  const home = tmp('home');
+  const bin = path.join(home, 'bin');
+  const cli = fs.realpathSync(path.join(__dirname, '..', 'cli', 'bc-axi'));
+  try {
+    let r = await runBc(['install', '--dir', bin], fleetEnv(home));
+    assert.strictEqual(r.code, 0, r.stderr);
+    for (const name of ['bc', 'bc-axi']) {
+      const link = path.join(bin, name);
+      assert.ok(fs.lstatSync(link).isSymbolicLink(), name + ' is a symlink');
+      // A link, never a copy: updating the checkout has to update the command.
+      assert.strictEqual(fs.realpathSync(link), cli);
+    }
+    assert.match(r.stdout, /installed .*\/bc ->/);
+    // Not on the PATH is a real half-installed state, and it says the line that fixes it.
+    assert.match(r.stdout, /is NOT on your PATH yet/);
+    assert.ok(r.stdout.includes('export PATH="' + bin + ':$PATH"'));
+
+    r = await runBc(['install', '--dir', bin], fleetEnv(home));
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.match(r.stdout, /already installed/);
+
+    // …and a bin dir that IS on the PATH gets the other sentence.
+    r = await runBc(['install', '--dir', bin], fleetEnv(home, { PATH: bin + ':' + process.env.PATH }));
+    assert.match(r.stdout, /is on your PATH — run `bc start` from anywhere/);
+
+    // The installed `bc` really is the captain's door, by the name it was called by.
+    const viaLink = await new Promise((resolve) => {
+      const child = spawn(path.join(bin, 'bc'), [], {
+        env: Object.assign({}, process.env, fleetEnv(home)),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '', err = '';
+      child.stdout.on('data', (c) => (out += c));
+      child.stderr.on('data', (c) => (err += c));
+      child.on('close', (code) => resolve({ code, out, err }));
+    });
+    assert.match(viaLink.err, /bc start \[<dir>\]/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('install never removes a stranger\'s file, and --uninstall never removes one either', async () => {
+  const home = tmp('home');
+  const bin = path.join(home, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'bc'), '#!/bin/sh\necho not ours\n');
+  try {
+    let r = await runBc(['install', '--dir', bin], fleetEnv(home));
+    assert.strictEqual(r.code, 1);
+    assert.match(r.stderr, /already exists and is not one of ours/);
+    assert.match(r.stderr, /--force replaces it/);
+    assert.strictEqual(fs.readFileSync(path.join(bin, 'bc'), 'utf8'), '#!/bin/sh\necho not ours\n');
+
+    // --force is the explicit "yes, replace it".
+    r = await runBc(['install', '--dir', bin, '--force'], fleetEnv(home));
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.ok(fs.lstatSync(path.join(bin, 'bc')).isSymbolicLink());
+
+    // Uninstall takes back only what it put there.
+    fs.writeFileSync(path.join(bin, 'unrelated'), 'keep me');
+    r = await runBc(['install', '--dir', bin, '--uninstall'], fleetEnv(home));
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.ok(!fs.existsSync(path.join(bin, 'bc')));
+    assert.ok(!fs.existsSync(path.join(bin, 'bc-axi')));
+    assert.strictEqual(fs.readFileSync(path.join(bin, 'unrelated'), 'utf8'), 'keep me');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('install runs before a fleet exists — the one verb that must not need one', async () => {
+  const home = tmp('home');
+  try {
+    const r = await runBc(['install', '--dir', path.join(home, 'bin')], fleetEnv(home), home);
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stderr, /no fleet found/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('install.sh installs from the checkout it came from, without cloning a second copy', async () => {
+  const home = tmp('home');
+  const bin = path.join(home, 'bin');
+  const root = path.join(__dirname, '..');
+  try {
+    const r = await new Promise((resolve) => {
+      const child = spawn('sh', [path.join(root, 'install.sh')], {
+        cwd: home,
+        env: Object.assign({}, process.env, fleetEnv(home), { BC_BIN_DIR: bin }),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '', err = '';
+      child.stdout.on('data', (c) => (out += c));
+      child.stderr.on('data', (c) => (err += c));
+      child.on('close', (code) => resolve({ code, out, err }));
+    });
+    assert.strictEqual(r.code, 0, r.err);
+    assert.match(r.out, /using the checkout this script came from/);
+    assert.strictEqual(fs.realpathSync(path.join(bin, 'bc')), fs.realpathSync(path.join(root, 'cli', 'bc-axi')));
+    // The clone destination must be untouched: a second copy is how you end up
+    // updating the checkout you are not running.
+    assert.ok(!fs.existsSync(path.join(home, '.local', 'share', 'bridge-commander')));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

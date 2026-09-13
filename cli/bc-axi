@@ -74,6 +74,7 @@ const opts = {
   onboard: false, here: false, allowRoot: false,
   hook: null, when: null, overlap: null, catchup: null,
   session: null, all: false, agents: false,
+  dir: null, force: false, uninstall: false,
 };
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -111,6 +112,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--session') opts.session = argv[++i];
   else if (a === '--all') opts.all = true;
   else if (a === '--agents') opts.agents = true;
+  else if (a === '--dir') opts.dir = argv[++i];
+  else if (a === '--force') opts.force = true;
+  else if (a === '--uninstall') opts.uninstall = true;
   else if (a === '--harness') opts.harness = argv[++i];
   else if (a === '--model') opts.model = argv[++i];
   else if (a === '--effort') opts.effort = argv[++i];
@@ -207,6 +211,9 @@ const RESOLVED = resolveWorkspace();
 // how to make one.
 const NO_FLEET = !RESOLVED;
 const WORKSPACE = RESOLVED || DEFAULT_FLEET;
+// The one verb that runs BEFORE a fleet can exist — refusing it for want of one
+// would be the joke that writes itself.
+const FLEETLESS = new Set(['install']);
 const NO_FLEET_MSG = 'no fleet found: no ' + STATE_DIR_NAME + '/ from cwd upward, and no fleet at ' + DEFAULT_FLEET + '\n'
   + '  `' + PROG + ' start` founds one there (or `' + PROG + ' start <dir>` somewhere else);\n'
   + '  --workspace <dir> points this one call at an existing fleet.';
@@ -515,6 +522,112 @@ async function cmdFleetStart() {
   printRoster(await readRoster(true));
   const drift = driftLineFor(st);
   if (drift) console.log('⚠ ' + drift);
+}
+
+// ---------- install: put `bc` on the PATH ----------
+// The tool ships as a skill folder or a git checkout, and neither puts anything
+// on anyone's PATH. Until it is, the only way to start a board is to remember
+// where the checkout landed and type its absolute path — which is the same
+// papercut `bc start` exists to remove, one layer down.
+//
+// So the CLI installs itself: two symlinks, into a directory the user already
+// owns, pointing at the checkout they already have. Nothing is copied (an
+// upgrade of the checkout is an upgrade of the command), nothing is downloaded,
+// and no shell rc file is edited behind anyone's back — a PATH that does not
+// contain the directory is REPORTED, with the exact line to add.
+function binDir() {
+  if (opts.dir) return path.resolve(opts.dir);
+  const xdg = String(process.env.XDG_BIN_HOME || '').trim();
+  return xdg ? path.resolve(xdg) : path.join(os.homedir(), '.local', 'bin');
+}
+
+// Is this path one of OURS — a link into some bridge-commander checkout's cli/?
+// An upgrade (the checkout moved) must repoint silently-but-loudly; a stranger's
+// file of the same name must never be removed without being asked.
+function ourLink(p) {
+  let st;
+  try { st = fs.lstatSync(p); } catch (e) { return null; } // nothing there
+  if (!st.isSymbolicLink()) return { foreign: true, target: null };
+  let target;
+  try { target = fs.realpathSync(p); } catch (e) { return { foreign: true, target: null, broken: true }; }
+  return path.basename(target) === 'bc-axi' && path.basename(path.dirname(target)) === 'cli'
+    ? { foreign: false, target }
+    : { foreign: true, target };
+}
+
+function pathDirs() {
+  return String(process.env.PATH || '').split(path.delimiter).filter(Boolean).map((d) => {
+    try { return fs.realpathSync(d); } catch (e) { return path.resolve(d); }
+  });
+}
+
+// The rc file to name. A guess, and said as one — the point is to save a person
+// a web search, not to be authoritative about their shell setup.
+function rcFileFor() {
+  const shell = path.basename(String(process.env.SHELL || ''));
+  if (shell === 'zsh') return '~/.zshrc';
+  if (shell === 'fish') return '~/.config/fish/config.fish';
+  return '~/.bashrc';
+}
+
+const INSTALL_NAMES = ['bc', 'bc-axi'];
+
+async function cmdInstall() {
+  const me = path.join(SELF_DIR, 'bc-axi');
+  if (!fs.existsSync(me)) die('cannot find the CLI to install: ' + me);
+  const dir = binDir();
+
+  if (opts.uninstall) {
+    let gone = 0;
+    for (const name of INSTALL_NAMES) {
+      const link = path.join(dir, name);
+      const cur = ourLink(link);
+      if (!cur) continue;
+      if (cur.foreign) { console.log('left alone (not ours): ' + link); continue; }
+      fs.unlinkSync(link);
+      console.log('removed ' + link);
+      gone++;
+    }
+    if (!gone) console.log('nothing of ours was installed in ' + dir);
+    return;
+  }
+
+  try { fs.mkdirSync(dir, { recursive: true }); }
+  catch (e) { die('cannot create ' + dir + ': ' + e.message); }
+
+  for (const name of INSTALL_NAMES) {
+    const link = path.join(dir, name);
+    const cur = ourLink(link);
+    if (cur && cur.foreign && !opts.force) {
+      die(link + ' already exists and is not one of ours' + (cur.target ? ' (it points at ' + cur.target + ')' : '')
+        + '\n  --force replaces it, or --dir <somewhere-else> installs beside it.');
+    }
+    if (cur && !cur.foreign && cur.target === fs.realpathSync(me)) {
+      console.log('already installed: ' + link);
+      continue;
+    }
+    try { if (cur) fs.unlinkSync(link); } catch (e) { die('cannot replace ' + link + ': ' + e.message); }
+    try { fs.symlinkSync(me, link); }
+    catch (e) { die('cannot link ' + link + ' -> ' + me + ': ' + e.message); }
+    console.log((cur ? 'repointed ' : 'installed ') + link + ' -> ' + me);
+  }
+
+  // A command that is installed but unreachable is not installed. Say which of
+  // the two states this is, and for the bad one, the one line that fixes it.
+  let real = dir;
+  try { real = fs.realpathSync(dir); } catch (e) {}
+  if (pathDirs().includes(real)) {
+    console.log('\n' + dir + ' is on your PATH — run `bc start` from anywhere.');
+  } else {
+    const line = 'export PATH="' + dir + ':$PATH"';
+    console.log('\n' + dir + ' is NOT on your PATH yet. Add it (' + rcFileFor() + ' is the usual place):\n'
+      + '\n  ' + line + '\n'
+      + '\nThen open a new shell and run `bc start`. Until then the full path works: '
+      + path.join(dir, 'bc') + ' start');
+  }
+  console.log('\n  bc      the captain\'s door — start / stop / agents / status'
+    + '\n  bc-axi  the agent CLI — cards, lieutenants, playbooks, schedules'
+    + '\n\nBoth are symlinks into ' + SELF_DIR + ', so updating that checkout updates both.');
 }
 
 // ---------- init: workspace.init — the teleport ----------
@@ -2092,7 +2205,7 @@ async function cmdConfig() {
 
 const commands = {
   init: cmdInit,
-  start: cmdFleetStart, agents: cmdAgents,
+  start: cmdFleetStart, agents: cmdAgents, install: cmdInstall,
   open: cmdOpen, stop: cmdStop, status: cmdStatus, config: cmdConfig,
   onboarding: cmdOnboarding,
   board: cmdBoard, thread: cmdThread, archived: cmdArchived, kinds: cmdKinds,
@@ -2130,6 +2243,7 @@ if (!commands[cmd]) {
       '  ' + PROG + ' agents             every lieutenant and worker, its tmux address, and whether\n' +
       '                        that pane is live right now\n' +
       '  ' + PROG + ' status             up/down, cards, queue, and the commit the server booted from\n' +
+      '  ' + PROG + ' install            put `bc` and `bc-axi` on your PATH (symlinks into this checkout)\n' +
       '\n' +
       'Flags worth knowing: --session NAME pins the tmux stem (default "' + fleet.DEFAULT_TMUX_SESSION + '", so a\n' +
       'lieutenant lives at ' + fleet.DEFAULT_TMUX_SESSION + '-lt-<id> and `tmux attach -t` that name works);\n' +
@@ -2161,6 +2275,13 @@ if (!commands[cmd]) {
     '                                         to launch an agent as uid 0 — ask the person for both\n' +
     '  onboarding [--json]                    the first-run step the board remembers\n' +
     '  onboarding set <step> [--note "..."]   advance it: board-up | tools | project | checklist | done\n' +
+    '  install [--dir D] [--force] [--uninstall]\n' +
+    '                                         put `bc` and `bc-axi` on the PATH: two symlinks into\n' +
+    '                                         ' + path.join(os.homedir(), '.local', 'bin') + ' (or --dir D, or $XDG_BIN_HOME),\n' +
+    '                                         pointing at THIS checkout — so updating the checkout updates\n' +
+    '                                         the commands. Nothing is copied, no rc file is edited: a\n' +
+    '                                         directory that is not on your PATH is reported with the one\n' +
+    '                                         line that adds it. Idempotent; needs no fleet\n' +
     '  start [<dir>] [--session NAME] [--port N] [--host H] [--here] [--allow-root]\n' +
     '                                         THE entry point. Founds the fleet if there is none, brings the\n' +
     '                                         board up if it is down, then prints the URL and the agent\n' +
@@ -2381,7 +2502,7 @@ if (!commands[cmd]) {
   // here. A down server, an unknown commit, or a match all print nothing extra.
   driftNote().then((n) => die(usage + (n ? '\n\n⚠ ' + n : '')), () => die(usage));
   }
-} else if (NO_FLEET) {
+} else if (NO_FLEET && !FLEETLESS.has(cmd)) {
   die(NO_FLEET_MSG);
 } else {
   commands[cmd]().catch((e) => die(e.message));

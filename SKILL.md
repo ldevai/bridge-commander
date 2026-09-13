@@ -21,7 +21,9 @@ Some skill installers copy only this file. Resolve the tool checkout, in order:
 `bc-axi` is the board CLI at `<checkout>/cli/bc-axi` (use PATH if available; run it bare for
 full usage). `<checkout>/cli/bc` is the same program under the captain's name — `bc start`,
 `bc stop`, `bc agents` — and that is what you tell the USER to run when they ask how to bring
-the board up again later. `DOCTRINE.md` and `OPERATIONS.md` live in the checkout root — read
+the board up again later. If `bc` is not on their PATH, `bc-axi install` puts it there (two
+symlinks into `~/.local/bin`, pointing at this checkout; it edits no rc file and reports a PATH
+that does not reach the dir). `DOCTRINE.md` and `OPERATIONS.md` live in the checkout root — read
 them from there, not next to this file, unless this dir is the tool.
 
 ## 1. Which of the two runs is this?

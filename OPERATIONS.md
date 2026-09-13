@@ -13,8 +13,16 @@ plate — not before.
 with the agent roster. `bc stop` stops the board and NAMES the agent sessions it left running;
 `bc stop --all` ends those too, server first so no supervision tick respawns what was just killed.
 
-`bc` and `bc-axi` are one program behind two names — `bc` prints the four captain verbs, `bc-axi`
-the full agent reference.
+`bc` and `bc-axi` are one program behind two names — `bc` prints the captain verbs, `bc-axi` the
+full agent reference. Neither is on anyone's PATH until `<checkout>/cli/bc-axi install` puts it
+there: two symlinks into `~/.local/bin` (`--dir D` for elsewhere, `--uninstall` to take them back),
+pointing at the checkout rather than copying it, so a `git pull` upgrades the commands. It edits no
+rc file — a bin dir off the PATH is reported with the line that adds it. `install.sh` at the repo
+root is the same thing for a machine with no checkout yet: clone (or fast-forward the clone it made
+last time) into `~/.local/share/bridge-commander`, then hand off to that same `install`.
+
+When you tell a person how to bring their board back up, tell them `bc start` — and if the command
+is not found, `<checkout>/cli/bc-axi install` first.
 
 ## Is anything still running?
 
