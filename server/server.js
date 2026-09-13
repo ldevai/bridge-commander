@@ -529,6 +529,13 @@ function validModel(m) {
   if (!t || /[\s\u0000-\u001f]/.test(t) || t.length > 100) return null;
   return t;
 }
+// Reasoning effort is a harness argv value, kept alongside model so both are
+// replayed when a lieutenant is next spawned or resumed.
+function validEffort(e) {
+  if (typeof e !== 'string') return null;
+  const t = e.trim().toLowerCase();
+  return /^(low|medium|high|xhigh|max|ultra)$/.test(t) ? t : null;
+}
 function labelIndex(name) { return board.labels.findIndex((l) => l && l.name === name); }
 function registerCardLabels() {
   for (const c of board.cards) {
@@ -590,6 +597,7 @@ function uniquePrefixIn(lts, base, exceptId) {
 const BAD_PREFIX = 'bad prefix (1-8 letters/digits starting with a letter — it heads every card id this lieutenant mints)';
 const BAD_MODEL = 'bad model (one token, no spaces or control characters, max 100 chars — '
   + 'it is handed straight to the harness CLI as --model; null clears it back to the harness default)';
+const BAD_EFFORT = 'bad effort (low, medium, high, xhigh, max, or ultra — null clears it back to the harness default)';
 function prefixOwner(p, exceptId) {
   return board.lieutenants.find((l) => l.id !== exceptId && l.prefix === p) || null;
 }
@@ -663,6 +671,7 @@ function createLieutenant(body) {
   if (validAvatar(body.avatar)) lt.avatar = body.avatar;
   if (validVoice(body.voice)) lt.voice = validVoice(body.voice);
   if (validModel(body.model)) lt.model = validModel(body.model);
+  if (validEffort(body.effort)) lt.effort = validEffort(body.effort);
   if (isHarnessRef(body.ref)) lt.ref = body.ref; // the live-session address, persisted with the board
   board.lieutenants.push(lt);
   const ev = mkEvent({ text: 'lieutenant ' + lt.name + ' joined the bridge', actor: body.actor || 'user', level: 2 }, {});
@@ -740,7 +749,8 @@ function ltLaunchOpts(lt, extra) {
     extra || {}
   );
   const model = lt && validModel(lt.model);
-  if (model) opts.extraArgs = ['--model', model];
+  const effort = lt && validEffort(lt.effort);
+  if (model || effort) opts.extraArgs = [].concat(model ? ['--model', model] : [], effort ? ['--effort', effort] : []);
   return opts;
 }
 
@@ -789,13 +799,17 @@ async function spawnLieutenant(body) {
   if (body.model !== undefined && body.model !== null && body.model !== '' && !validModel(body.model)) {
     return { error: BAD_MODEL };
   }
+  if (body.effort !== undefined && body.effort !== null && body.effort !== '' && !validEffort(body.effort)) {
+    return { error: BAD_EFFORT };
+  }
   // A revived lieutenant keeps the model it was pinned to unless this call
   // names another; a new one is born on whatever it was given.
   const model = validModel(body.model) || (existing && validModel(existing.model)) || null;
+  const effort = validEffort(body.effort) || (existing && validEffort(existing.effort)) || null;
   const session = names.lieutenantSession(WORKSPACE, id);
   let ref;
   try {
-    ref = await impl.spawn(WORKSPACE, lieutenantPrompt(name, id), ltLaunchOpts({ model }, {
+    ref = await impl.spawn(WORKSPACE, lieutenantPrompt(name, id), ltLaunchOpts({ model, effort }, {
       session,
       window: names.LIEUTENANT_WINDOW, // its own window in its own session — see names.js
       // Only the first run sends this, and only when the person said so out
@@ -835,6 +849,7 @@ async function retireLieutenant(id, body) {
   nudged.delete(id);
   // A retired lieutenant can never drain again: its queue files go too.
   try { fs.unlinkSync(queueFile(id)); } catch (e) { /* none */ }
+  try { fs.unlinkSync(queueCancelFile(id)); } catch (e) { /* none */ }
   try { fs.unlinkSync(ackFile(id)); } catch (e) { /* none */ }
   try { fs.unlinkSync(drainedFile(id)); } catch (e) { /* none */ }
   // …and so does its conversation, which used to leave with the record itself:
@@ -861,6 +876,11 @@ async function retireLieutenant(id, body) {
 // The durable queue is the write-ahead ground truth; the wake half (one
 // coalesced harness.send per append burst) rides behind it, below.
 function queueFile(lt) { return path.join(QUEUE_DIR, lt + '.jsonl'); }
+// A cancellation is an append-only companion record, not an edit of a queue
+// item that may already be on disk or being read by a lieutenant. It suppresses
+// the item on its next drain; if a turn has already begun, the caller also gets
+// an Escape below to stop that turn promptly.
+function queueCancelFile(lt) { return path.join(QUEUE_DIR, lt + '.cancel.jsonl'); }
 function ackFile(lt) { return path.join(QUEUE_DIR, lt + '.ack'); }
 function drainedFile(lt) { return path.join(QUEUE_DIR, lt + '.drained'); }
 function readQueue(lt) {
@@ -868,10 +888,22 @@ function readQueue(lt) {
     return fs.readFileSync(queueFile(lt), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   } catch (e) { return []; }
 }
+function cancelledSeqs(lt) {
+  const out = new Set();
+  try {
+    for (const line of fs.readFileSync(queueCancelFile(lt), 'utf8').split('\n')) {
+      if (!line) continue;
+      try { const rec = JSON.parse(line); if (Number.isInteger(rec.seq)) out.add(rec.seq); } catch (e) {}
+    }
+  } catch (e) {}
+  return out;
+}
 function queueIds() {
   const ids = new Set(board.lieutenants.map((l) => l.id));
   try {
-    for (const f of fs.readdirSync(QUEUE_DIR)) if (f.endsWith('.jsonl')) ids.add(f.slice(0, -6));
+    for (const f of fs.readdirSync(QUEUE_DIR)) {
+      if (f.endsWith('.jsonl') && !f.endsWith('.cancel.jsonl')) ids.add(f.slice(0, -6));
+    }
   } catch (e) {}
   return [...ids];
 }
@@ -910,7 +942,8 @@ function queuePush(lt, rec) {
 }
 function pendingItems(lt) {
   const ack = readAck(lt);
-  return readQueue(lt).filter((it) => it.seq > ack);
+  const cancelled = cancelledSeqs(lt);
+  return readQueue(lt).filter((it) => it.seq > ack && !cancelled.has(it.seq));
 }
 function drainItems(lt) {
   const lts = lt ? [lt] : queueIds();
@@ -937,6 +970,27 @@ function commitAck(seq, ownerId) {
     return { ok: true, lieutenant: lt, ack: Math.max(cur, seq) };
   }
   return { error: 'unknown seq: ' + seq, code: 400 };
+}
+
+// Pull back one captain message. The original queue line stays immutable; the
+// cancellation companion makes future drains skip it. The caller may still
+// interrupt an already-running turn, but cannot pretend an already-acked
+// message was never handled.
+function cancelQueuedMessage(seq, target) {
+  for (const lt of queueIds()) {
+    const item = readQueue(lt).find((it) => it.seq === seq);
+    if (!item) continue;
+    if (item.kind !== 'message' || item.target !== target) {
+      return { error: 'seq ' + seq + ' is not that captain message', code: 409 };
+    }
+    if (seq <= readAck(lt)) return { error: 'message was already handled', code: 409 };
+    const cancelled = cancelledSeqs(lt);
+    if (!cancelled.has(seq)) {
+      fs.appendFileSync(queueCancelFile(lt), JSON.stringify({ seq, ts: now() }) + '\n');
+    }
+    return { ok: true, lieutenant: lt, cancelled: !cancelled.has(seq) };
+  }
+  return { error: 'unknown message delivery: ' + seq, code: 404 };
 }
 
 // ---------- lieutenant main chat (append-only files; the FILE is truth) ----------
@@ -1087,8 +1141,9 @@ function lastThreadReadMs(target, user) {
 function latestMessageSeqs() {
   const map = new Map(); // target -> {seq, lt} of the latest kind:'message' delivery
   for (const lt of queueIds()) {
+    const cancelled = cancelledSeqs(lt);
     for (const it of readQueue(lt)) {
-      if (it.kind !== 'message' || !it.target) continue;
+      if (cancelled.has(it.seq) || it.kind !== 'message' || !it.target) continue;
       const cur = map.get(it.target);
       if (!cur || it.seq > cur.seq) map.set(it.target, { seq: it.seq, lt });
     }
@@ -4687,7 +4742,7 @@ const server = http.createServer(async (req, res) => {
       saveBoard(); broadcast();
       return sendJson(res, 200, { ok: true, event: r.event, memory: r.memory });
     }
-    if (ltRoute && req.method === 'PATCH') { // name/color/avatar/voice/prefix/model/harness/ref (init idempotency)
+    if (ltRoute && req.method === 'PATCH') { // name/color/avatar/voice/prefix/model/effort/harness/ref (init idempotency)
       const lt = findLieutenant(decodeURIComponent(ltRoute[1]));
       if (!lt) return sendJson(res, 404, { error: 'unknown lieutenant: ' + decodeURIComponent(ltRoute[1]) });
       const body = JSON.parse(await readBody(req) || '{}');
@@ -4737,6 +4792,14 @@ const server = http.createServer(async (req, res) => {
           const m = validModel(body.model);
           if (!m) return sendJson(res, 400, { error: BAD_MODEL });
           lt.model = m;
+        }
+      }
+      if (body.effort !== undefined) {
+        if (body.effort === null || body.effort === '') delete lt.effort;
+        else {
+          const effort = validEffort(body.effort);
+          if (!effort) return sendJson(res, 400, { error: BAD_EFFORT });
+          lt.effort = effort;
         }
       }
       // Last, because it is the only field that costs the lieutenant its
@@ -5396,6 +5459,31 @@ const server = http.createServer(async (req, res) => {
       }
       saveBoard(); broadcast(); // a captain message flips derived owed via broadcast
       return sendJson(res, 200, { ok: true, seq: item.seq, target, via: overLine ? 'line' : undefined });
+    }
+    // Pull back a message the captain just sent. Suppressing the queue item
+    // covers an agent that has not drained it; Escape covers one that has
+    // already started its turn. Escape is deliberately an interrupt, never a
+    // lieutenant-session kill — the same agent remains available to continue.
+    if (route === 'POST /api/feedback/cancel') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const seq = parseInt(body.seq, 10);
+      const target = String(body.target || '');
+      if (!Number.isInteger(seq) || seq < 1 || !target) return sendJson(res, 400, { error: 'seq and target required' });
+      const r = cancelQueuedMessage(seq, target);
+      if (r.error) return sendJson(res, r.code || 400, { error: r.error });
+      nudged.delete(r.lieutenant); // the pulled-back message must not keep waking the agent
+      const lt = findLieutenant(r.lieutenant);
+      let interrupted = false;
+      let interruptError = '';
+      if (lt && isHarnessRef(lt.ref)) {
+        const impl = harnessFor(lt.ref);
+        if (typeof impl.paneInput === 'function') {
+          try { await impl.paneInput(lt.ref, { key: 'Escape' }); interrupted = true; }
+          catch (e) { interruptError = String((e && e.message) || e); }
+        }
+      }
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, cancelled: r.cancelled, interrupted, interruptError: interruptError || undefined });
     }
 
     // ----- the line -----

@@ -53,6 +53,7 @@ export const api = {
   archiveCard: (id, reason) => j('POST', '/api/cards/' + encodeURIComponent(id) + '/archive', { actor: 'user', reason }),
   feedback: (target, text, attachments) => j('POST', '/api/feedback',
     Object.assign({ target, text }, attachments && attachments.length ? { attachments } : {})),
+  cancelFeedback: (seq, target) => j('POST', '/api/feedback/cancel', { seq, target }),
   // upload a File → {id, uri, name, mime, size}. base64 is the zero-dep transport.
   uploadAttachment: (file) => new Promise((resolve, reject) => {
     const fr = new FileReader();

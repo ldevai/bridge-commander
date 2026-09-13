@@ -276,6 +276,10 @@ body.resizing { user-select: none; cursor: col-resize; }
 }
 .composer-attach:hover { color: var(--accent); border-color: var(--accent2); }
 .composer-attach:disabled { opacity: .4; pointer-events: none; }
+.composer-mode { background: var(--panel2) !important; border: 1px solid var(--line); color: var(--dim) !important; font-size: 16px !important; }
+.composer-mode.on { color: var(--accent) !important; border-color: var(--accent2); }
+.composer-stop { background: var(--panel2) !important; border: 1px solid var(--danger); color: var(--danger) !important; font-size: 11px !important; }
+.composer-stop:hover { background: rgba(239, 100, 97, .14) !important; }
 #chat-send-err {
   flex: none; padding: 6px 12px 0; font-size: 12px; color: var(--danger);
 }
@@ -1110,6 +1114,8 @@ a.a-uri { color: var(--accent); }
 #move-menu button.cur { color: var(--faint); cursor: default; }
 #move-menu button.danger { color: var(--danger); }
 #move-menu button.danger:hover { background: rgba(239, 100, 97, .1); }
+#move-menu .mm-tune { display: flex; gap: 5px; padding: 5px 8px 7px; }
+#move-menu .mm-tune input, #move-menu .mm-tune select { min-width: 0; width: 110px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font-size: 11px; }
 #move-menu .mm-sep { height: 1px; background: var(--line); margin: 4px 6px; }
 #owner-menu button { display: flex; align-items: center; gap: 7px; }
 #owner-menu button .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }

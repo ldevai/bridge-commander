@@ -24,6 +24,27 @@ const backBtn = document.getElementById('chat-back');
 const openBtn = document.getElementById('chat-card-open');
 const inputEl = document.getElementById('chat-input');
 const drafts = createDraftStore();
+const enterModeBtn = document.getElementById('chat-enter-mode');
+const interruptBtn = document.getElementById('chat-interrupt');
+const ENTER_SEND_KEY = 'bc-chat-enter-sends';
+let enterSends = true;
+try { enterSends = localStorage.getItem(ENTER_SEND_KEY) !== '0'; } catch (e) {}
+function paintEnterMode() {
+  enterModeBtn.classList.toggle('on', enterSends);
+  enterModeBtn.setAttribute('aria-pressed', String(enterSends));
+  enterModeBtn.title = enterSends ? 'Enter sends · Shift+Enter adds a line (click to change)'
+    : 'Enter adds a line (click to send with Enter)';
+}
+enterModeBtn.onclick = () => {
+  enterSends = !enterSends;
+  try { enterSends ? localStorage.removeItem(ENTER_SEND_KEY) : localStorage.setItem(ENTER_SEND_KEY, '0'); } catch (e) {}
+  paintEnterMode();
+};
+paintEnterMode();
+let interruptable = null; // {seq, target}: the latest delivered message, until stopped or switched away
+function paintInterrupt() {
+  interruptBtn.hidden = !(interruptable && interruptable.target === currentTarget());
+}
 
 // The textarea is shared by every conversation. Move its text into the
 // outgoing target's slot, then show the incoming target's slot. A missing
@@ -409,6 +430,7 @@ function ltTriggerHtml(lt) {
 
 export function renderChat() {
   const target = currentTarget();
+  paintInterrupt();
   if (!target) {
     backBtn.hidden = true;
     openBtn.hidden = true;
@@ -868,6 +890,7 @@ function clearSyncHint() {
   sendErrEl.hidden = true;
 }
 function setSendError(msg) {
+  clearTimeout(interruptNoticeTimer);
   syncHinted = false;
   sendErrEl.classList.remove('sync');
   inputEl.classList.add('send-fail');
@@ -875,6 +898,7 @@ function setSendError(msg) {
   sendErrEl.hidden = false;
 }
 function clearSendError() {
+  clearTimeout(interruptNoticeTimer);
   syncHinted = false;
   sendErrEl.classList.remove('sync');
   inputEl.classList.remove('send-fail');
@@ -901,12 +925,14 @@ async function send() {
     // independent — then post the message with the returned attachment metas
     // (the server re-resolves them authoritatively by id).
     const metas = await Promise.all(atts.map((p) => api.uploadAttachment(p.file)));
-    await api.feedback(target, text, metas);
+    const delivered = await api.feedback(target, text, metas);
     // The 200 IS delivery (write-ahead queue) — clear the composer now, and in
     // the SAME paint put the message in the thread as a pending bubble, so
     // there is never a frame where it exists nowhere. The soft watchdog only
     // flags a stalled echo.
     addPending(target, text, metas);
+    interruptable = delivered && Number.isInteger(delivered.seq) ? { seq: delivered.seq, target } : null;
+    paintInterrupt();
     inputEl.value = '';
     drafts.set(target, '');
     if (q) refreshQuote(); // re-arm from the screen: still there = still attached
@@ -947,6 +973,39 @@ inputEl.onkeydown = (e) => {
     }
     if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
   }
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+  if (e.key === 'Enter' && ((e.metaKey || e.ctrlKey) || (enterSends && !e.shiftKey && !e.isComposing))) {
+    e.preventDefault(); send();
+  }
 };
+interruptBtn.onclick = async () => {
+  if (!interruptable) return;
+  const item = interruptable;
+  interruptBtn.disabled = true;
+  try {
+    const r = await api.cancelFeedback(item.seq, item.target);
+    interruptable = null;
+    paintInterrupt();
+    showInterruptNotice(r.interrupted ? 'message cancelled — response interrupted' : 'message cancelled');
+  } catch (e) {
+    // A click can race the server's successful cancellation broadcast. Once
+    // the delivery is already gone, Stop achieved its purpose — say so rather
+    // than stranding a scary "not found" banner below the composer.
+    if (e.status === 404 || e.status === 409) {
+      interruptable = null;
+      paintInterrupt();
+      showInterruptNotice('message already stopped');
+    } else {
+      showInterruptNotice('⚠ could not cancel — ' + e.message);
+    }
+  } finally { interruptBtn.disabled = false; }
+};
+
+let interruptNoticeTimer = null;
+function showInterruptNotice(text) {
+  sendErrEl.textContent = text;
+  sendErrEl.classList.remove('sync');
+  sendErrEl.hidden = false;
+  clearTimeout(interruptNoticeTimer);
+  interruptNoticeTimer = setTimeout(() => { if (!syncHinted) sendErrEl.hidden = true; }, 3000);
+}
 document.getElementById('chat-form').onsubmit = (e) => { e.preventDefault(); send(); };

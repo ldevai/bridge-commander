@@ -189,3 +189,19 @@ test('captain feedback to a lieutenant main chat routes to that lieutenant queue
     await s.stop();
   }
 });
+
+test('captain can immediately cancel a delivered message before a lieutenant drains it', async () => {
+  const s = await startServerWithLieutenant();
+  try {
+    const sent = await s.api('POST', '/api/feedback', { target: 'lieutenant:' + LT, text: 'ignore this' });
+    assert.strictEqual(sent.status, 200);
+    const stop = await s.api('POST', '/api/feedback/cancel', { target: 'lieutenant:' + LT, seq: sent.body.seq });
+    assert.strictEqual(stop.status, 200, JSON.stringify(stop.body));
+    assert.strictEqual(stop.body.cancelled, true);
+    const feed = await s.api('GET', '/api/feed?lieutenant=' + LT);
+    assert.deepStrictEqual(feed.body.items, [], 'the pulled-back item is not delivered on a later drain');
+
+    const again = await s.api('POST', '/api/feedback/cancel', { target: 'lieutenant:' + LT, seq: sent.body.seq });
+    assert.strictEqual(again.status, 200, 'repeating Stop is harmless');
+  } finally { await s.stop(); }
+});

@@ -140,6 +140,36 @@ function openLtMenu(ltId, x, y) {
   settings.textContent = '⚙ settings';
   settings.onclick = (e) => { e.stopPropagation(); closeMoveMenu(); openLtSettings(ltId); };
   menuEl.appendChild(settings);
+  // The two knobs a captain reaches for most often live right here instead of
+  // behind the full appearance/settings modal. They are persisted launch picks:
+  // a live session keeps running, and its next spawn/resume takes the change.
+  const tune = document.createElement('div');
+  tune.className = 'mm-tune';
+  const model = document.createElement('input');
+  model.placeholder = 'model (next launch)';
+  model.value = l.model || '';
+  model.title = 'model for the next spawn or resume';
+  const effort = document.createElement('select');
+  effort.title = 'reasoning effort for the next spawn or resume';
+  for (const value of ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = value || 'effort: default'; effort.appendChild(o);
+  }
+  effort.value = l.effort || '';
+  const saveModel = async () => {
+    const want = model.value.trim();
+    if (want === (l.model || '')) return;
+    try { await api.updateLieutenant(ltId, { model: want || null }); }
+    catch (e) { alert(e.message); model.value = l.model || ''; }
+  };
+  model.onchange = saveModel;
+  model.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); model.blur(); } };
+  effort.onchange = async () => {
+    try { await api.updateLieutenant(ltId, { effort: effort.value || null }); }
+    catch (e) { alert(e.message); effort.value = l.effort || ''; }
+  };
+  tune.append(model, effort);
+  menuEl.appendChild(tune);
   const owned = cards().filter((c) => c.owner === ltId).length;
   const retire = document.createElement('button');
   retire.className = 'danger';
@@ -175,6 +205,7 @@ const lsVoice = document.getElementById('ls-voice');
 const lsGrid = document.getElementById('ls-grid');
 const lsHarness = document.getElementById('ls-harness');
 const lsModel = document.getElementById('ls-model');
+const lsEffort = document.getElementById('ls-effort');
 let lsLtId = null;
 // Exported for the config screen's lieutenants tab: its ⚙ is THIS modal, not a
 // second form over the same four fields.
@@ -190,6 +221,7 @@ export function openLtSettings(ltId) {
   fillVoices(l.voice || '');
   fillHarness(l);
   lsModel.value = l.model || '';
+  lsEffort.value = l.effort || '';
   lsEl.hidden = false;
   lsPrefix.focus();
 }
@@ -265,6 +297,7 @@ lsModel.onchange = async () => {
   else lsModel.value = want;
 };
 lsModel.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); lsModel.blur(); } };
+lsEffort.onchange = () => patch({ effort: lsEffort.value || null });
 // The card-id prefix commits on change like the other picks. The server refuses
 // one another lieutenant already holds — say so and put the field back, so the
 // box never shows a prefix this lieutenant does not have.
