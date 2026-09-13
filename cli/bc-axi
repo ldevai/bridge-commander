@@ -73,7 +73,7 @@ const opts = {
   card: null, trigger: null, key: null, source: null, limit: 0,
   onboard: false, here: false, allowRoot: false,
   hook: null, when: null, overlap: null, catchup: null,
-  session: null, all: false, agents: false,
+  session: null, all: false, agents: false, help: false,
   dir: null, force: false, uninstall: false,
 };
 const positional = [];
@@ -115,6 +115,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--dir') opts.dir = argv[++i];
   else if (a === '--force') opts.force = true;
   else if (a === '--uninstall') opts.uninstall = true;
+  else if (a === '--help' || a === '-h') opts.help = true;
   else if (a === '--harness') opts.harness = argv[++i];
   else if (a === '--model') opts.model = argv[++i];
   else if (a === '--effort') opts.effort = argv[++i];
@@ -142,12 +143,14 @@ for (let i = 0; i < argv.length; i++) {
   // <card-id> and half-working. Positionals here are ids, paths and URLs —
   // none of them start with `--`.
   else if (a.startsWith('--')) {
-    process.stderr.write('bc-axi: unknown flag ' + a + ' (run bc-axi bare for usage)\n');
+    process.stderr.write(PROG + ': unknown flag ' + a + ' (run `' + PROG + ' help` for usage)\n');
     process.exit(1);
   }
   else positional.push(a);
 }
 let cmd = positional.shift();
+// --help/-h is the same request as the `help` verb, wherever it appears.
+if (opts.help) cmd = 'help';
 // Two-word verbs mirror the DNA operation names: `card create`, `lieutenant list`, …
 if ((cmd === 'card' || cmd === 'lieutenant' || cmd === 'project' || cmd === 'worker' || cmd === 'artifact' || cmd === 'line' || cmd === 'playbook' || cmd === 'hook' || cmd === 'schedule') && positional.length) cmd = cmd + ' ' + positional.shift();
 // Three-word verb: `card artifact add|rm`.
@@ -289,7 +292,10 @@ async function serverUp() {
 function driftLineFor(st) {
   const code = st && st.code;
   if (!code || !code.root) return null;
-  try { return gitrev.driftLine(code, gitrev.headCommit(code.root)); } catch (e) { return null; }
+  // The restart is spelled the way the caller got here — a fix that names a
+  // command they do not have is not a fix.
+  try { return gitrev.driftLine(code, gitrev.headCommit(code.root), PROG + ' stop && ' + PROG + ' start'); }
+  catch (e) { return null; }
 }
 async function driftNote() {
   const st = await serverUp();
@@ -376,7 +382,7 @@ async function rebindIfAsked() {
     + ' — restarting it on the new address (sessions are unaffected)');
   try { process.kill(st.pid, 'SIGTERM'); } catch (e) { die('could not stop the running server (pid ' + st.pid + '): ' + e.message); }
   for (let i = 0; i < 40 && await serverUp(); i++) await sleep(100);
-  if (await serverUp()) die('the running server did not stop — stop it and try again: bc-axi stop');
+  if (await serverUp()) die('the running server did not stop — stop it and try again: ' + PROG + ' stop');
 }
 
 async function cmdOpen() {
@@ -475,7 +481,7 @@ function printRoster(r) {
   const dead = rows.filter((x) => x[2] === 'dead').length;
   if (r.probed && dead) {
     console.log('  ' + dead + ' dead — a lieutenant respawns on the next supervision tick; a dead worker'
-      + ' needs `bc-axi card start <id> --resume` or `bc-axi card park <id>`');
+      + ' needs `' + PROG + ' card start <id> --resume` or `' + PROG + ' card park <id>`');
   }
 }
 
@@ -625,8 +631,9 @@ async function cmdInstall() {
       + '\nThen open a new shell and run `bc start`. Until then the full path works: '
       + path.join(dir, 'bc') + ' start');
   }
-  console.log('\n  bc      the captain\'s door — start / stop / agents / status'
-    + '\n  bc-axi  the agent CLI — cards, lieutenants, playbooks, schedules'
+  console.log('\n  bc      the whole CLI — `bc help` prints the full reference'
+    + '\n  bc-axi  the same program under its older name, installed too because the'
+    + '\n          packaged playbooks and agent instructions still call it by it'
     + '\n\nBoth are symlinks into ' + SELF_DIR + ', so updating that checkout updates both.');
 }
 
@@ -895,6 +902,7 @@ async function settleOnboardPort(fr) {
 
 async function cmdInitOnboard() {
   const fr = require(path.join(SELF_DIR, '..', 'server', 'firstrun.js'));
+  fr.setProg(PROG); // every command these texts hand over is spelled the way the caller got here
 
   // 1. What IS this directory? Decided before one byte is written, in the one
   //    order that works: workspace, then empty, then refuse and name what it found.
@@ -908,7 +916,7 @@ async function cmdInitOnboard() {
   const resuming = inherited || look.verdict === 'workspace';
   if (inherited) console.error('already inside the workspace at ' + WORKSPACE + ' — continuing it');
   if (!resuming && look.verdict !== 'empty' && !opts.here) {
-    die('bc-axi: first run refused (' + look.verdict + ')\n\n' + fr.refusalText(target, look));
+    die(PROG + ': first run refused (' + look.verdict + ')\n\n' + fr.refusalText(target, look));
   }
 
   // 2. Can this machine run a board at all? Nothing here installs anything —
@@ -916,13 +924,13 @@ async function cmdInitOnboard() {
   const harness = opts.harness || 'claude';
   const tmuxBacked = harness === 'claude' || harness === 'codex';
   if (tmuxBacked && !fr.hasBin('tmux')) {
-    die('bc-axi: first run blocked (tmux-missing)\n\n' + fr.tmuxMissingText());
+    die(PROG + ': first run blocked (tmux-missing)\n\n' + fr.tmuxMissingText());
   }
   // Root is checked HERE, not discovered from a dead pane 45 seconds later: as
   // root claude exits on sight of --dangerously-skip-permissions, so the board
   // would come up with nobody on it and a message that guessed wrong about why.
   if (harness === 'claude' && fr.isRoot() && !opts.allowRoot) {
-    die('bc-axi: first run blocked (root)\n\n' + fr.rootBlockText());
+    die(PROG + ': first run blocked (root)\n\n' + fr.rootBlockText());
   }
   if (opts.allowRoot && fr.isRoot()) {
     console.error('\n⚠ --allow-root: Bridget will be launched with IS_SANDBOX=1, skipping the guard that\n'
@@ -936,9 +944,9 @@ async function cmdInitOnboard() {
 
   const port = await settleOnboardPort(fr);
   if (!port) {
-    die('bc-axi: first run blocked (port-busy)\n\n'
+    die(PROG + ': first run blocked (port-busy)\n\n'
       + 'ports ' + PORT + '-' + (PORT + 19) + ' are all in use, so the board has nowhere to listen.\n'
-      + 'Free one, or pick a port yourself: bc-axi init --onboard --port <N>');
+      + 'Free one, or pick a port yourself: ' + PROG + ' start --port <N>');
   }
   if (port.moved) console.error('port ' + (opts.port || DEFAULT_PORT) + ' was taken by something else — using ' + PORT);
 
@@ -2229,279 +2237,287 @@ const commands = {
   say: cmdSay, drain: cmdDrain, ack: cmdAck,
   line: cmdLine, 'line pass': cmdLinePass,
 };
-if (!commands[cmd]) {
-  // Two doors, two screens. `bc` is the captain's: four verbs, no flags to
-  // remember, and one line saying where the rest of the CLI is. Dumping the
-  // agent CLI's full reference on someone who typed `bc` is how the start
-  // instructions got lost in the first place.
-  if (SHORT_DOOR) {
-    const short = (PROG + ' — the bridge-commander fleet.\n' +
-      '\n' +
-      '  ' + PROG + ' start [<dir>]      found the fleet if there is none, bring the board up, print the\n' +
-      '                        URL and the agent roster. No dir = ' + DEFAULT_FLEET + '\n' +
-      '  ' + PROG + ' stop [--all]       stop the board. Agent sessions survive unless --all\n' +
-      '  ' + PROG + ' agents             every lieutenant and worker, its tmux address, and whether\n' +
-      '                        that pane is live right now\n' +
-      '  ' + PROG + ' status             up/down, cards, queue, and the commit the server booted from\n' +
-      '  ' + PROG + ' install            put `bc` and `bc-axi` on your PATH (symlinks into this checkout)\n' +
-      '\n' +
-      'Flags worth knowing: --session NAME pins the tmux stem (default "' + fleet.DEFAULT_TMUX_SESSION + '", so a\n' +
-      'lieutenant lives at ' + fleet.DEFAULT_TMUX_SESSION + '-lt-<id> and `tmux attach -t` that name works);\n' +
-      '--port N and --host H bind the board; $BC_FLEET points every call at another fleet.\n' +
-      '\n' +
-      'Everything else — cards, lieutenants, playbooks, schedules — is `bc-axi`, the agent CLI.\n' +
-      'Run `bc-axi` bare for its reference.');
-    driftNote().then((n) => die(short + (n ? '\n\n⚠ ' + n : '')), () => die(short));
-  } else {
-  const usage = ('bc-axi — agent CLI for the bridge-commander board.\n' +
-    'Fleet: --workspace DIR, else $BC_FLEET, else the nearest .bridge-commander/ from cwd upward, else the\n' +
-    'default fleet at ' + DEFAULT_FLEET + '. Port: the fleet\'s config.json (default 4780), or --port N.\n' +
-    'Bind host: config.json "host" (default 127.0.0.1 loopback), or --host H on init/open. Never 0.0.0.0 — there is no app auth.\n' +
-    '\nserver & workspace:\n' +
-    '  init --name N [--id id] [--charter-file f|-] [--port N] [--host H]\n' +
-    '                                         workspace.init (the teleport): run INSIDE tmux; bootstraps\n' +
-    '                                         .bridge-commander/, boots the server, registers the caller\'s tmux\n' +
-    '                                         session as the founding lieutenant, installs the turn-end hook,\n' +
-    '                                         scaffolds AGENTS.md + captain.md + learnings/, seeds the\n' +
-    '                                         playbooks and symlinks the worker-duties skill. Idempotent\n' +
-    '  init --onboard [--here] [--allow-root] [--port N] [--host H]\n' +
-    '                                         the FIRST run, for a session that is NOT in tmux: refuses a\n' +
-    '                                         code project (naming what it found), continues an existing\n' +
-    '                                         workspace, brings the board up, and leaves lieutenant Bridget\n' +
-    '                                         on it — chartered, spawned in her own tmux session, with a\n' +
-    '                                         welcome message already waiting. Installs nothing. Idempotent:\n' +
-    '                                         a re-run resumes (see `onboarding`). --here overrides the\n' +
-    '                                         refusal for a non-empty folder, --allow-root the refusal\n' +
-    '                                         to launch an agent as uid 0 — ask the person for both\n' +
-    '  onboarding [--json]                    the first-run step the board remembers\n' +
-    '  onboarding set <step> [--note "..."]   advance it: board-up | tools | project | checklist | done\n' +
-    '  install [--dir D] [--force] [--uninstall]\n' +
-    '                                         put `bc` and `bc-axi` on the PATH: two symlinks into\n' +
-    '                                         ' + path.join(os.homedir(), '.local', 'bin') + ' (or --dir D, or $XDG_BIN_HOME),\n' +
-    '                                         pointing at THIS checkout — so updating the checkout updates\n' +
-    '                                         the commands. Nothing is copied, no rc file is edited: a\n' +
-    '                                         directory that is not on your PATH is reported with the one\n' +
-    '                                         line that adds it. Idempotent; needs no fleet\n' +
-    '  start [<dir>] [--session NAME] [--port N] [--host H] [--here] [--allow-root]\n' +
-    '                                         THE entry point. Founds the fleet if there is none, brings the\n' +
-    '                                         board up if it is down, then prints the URL and the agent\n' +
-    '                                         roster. No dir = the default fleet (' + DEFAULT_FLEET + '),\n' +
-    '                                         overridable with <dir>, --workspace or $BC_FLEET. A fleet it\n' +
-    '                                         FOUNDS is named: its tmux sessions are <session>-lt-<id>,\n' +
-    '                                         default "' + fleet.DEFAULT_TMUX_SESSION + '" (--session picks another; a name another\n' +
-    '                                         fleet already claimed gets a suffix rather than a collision)\n' +
-    '  agents [--json]                        the roster: every lieutenant and worker, its tmux address, and\n' +
-    '                                         whether that pane is actually live. Agents are tmux sessions,\n' +
-    '                                         not children of the board — they survive a restart and a fresh\n' +
-    '                                         server adopts them back off the recorded refs\n' +
-    '  open [--port N] [--host H]             start the workspace server if needed (idempotent), print URL.\n' +
-    '                                         Bootstraps .bridge-commander/ in cwd on first run.\n' +
-    '  status [--agents]                      up/down, cards, lieutenants, pending queue items, and the\n' +
-    '                                         commit the server BOOTED from (code=). When the checkout has\n' +
-    '                                         moved past it, one line names both commits and the restart —\n' +
-    '                                         silence means the running server IS the code on disk\n' +
-    '  stop [--all]                           stop the board server, and SAY which agent sessions it left\n' +
-    '                                         running (they survive on purpose). --all ends those too\n' +
-    '\nlieutenant:\n' +
-    '  lieutenant create --name N [--id id] [--color #rrggbb] [--avatar N] [--prefix ABC] [--charter-file f|-] [--spawn [--harness h]]\n' +
-    '                                         register a lieutenant (color auto-assigned when omitted;\n' +
-    '                                         --avatar 0-63 indexes the sprite sheet, omitted = colored-dot\n' +
-    '                                         fallback; --prefix heads the card ids it mints and defaults\n' +
-    '                                         to the first three letters of the name); --spawn births a REAL\n' +
-    '                                         agent session in the workspace root (doctrine + charter as\n' +
-    '                                         launch prompt, ref persisted)\n' +
-    '  lieutenant list [--json]               id, name, color, next card id, harness[:model],\n' +
-    '                                         charter first line\n' +
-    '                                         (the charter is lieutenants/<id>/README.md, the memory file\n' +
-    '                                         the agent is launched on — --charter-file creates it when\n' +
-    '                                         absent and never replaces one)\n' +
-    '  lieutenant patch <id> [--avatar N|none] [--color #rrggbb] [--prefix ABC]\n' +
-    '                        [--harness claude|codex] [--model m|none]\n' +
-    '                                         lieutenant.update: cosmetics + the card-id prefix (refused\n' +
-    '                                         when another lieutenant holds it) — name/id stay immutable.\n' +
-    '                                         --harness MOVES a living lieutenant: kills its session and\n' +
-    '                                         respawns it on the other harness with charter + owned cards\n' +
-    '                                         + pending queue as the prompt (the conversation is lost, the\n' +
-    '                                         queue is not). --model is stored and rides --model on every\n' +
-    '                                         later spawn/resume; `none` = the harness default\n' +
-    '  lieutenant retire <id>                 lieutenant.retire: refuses while the lieutenant owns\n' +
-    '                                         non-archived cards; else kills its session, removes it\n' +
-    '                                         and its queue, level-1 event\n' +
-    '\nproject:\n' +
-    '  project add <git-url|path> [--name n]  clone into <workspace>/projects/<name> and register it;\n' +
-    '                                         a card\'s repo attribute must name a registered project\n' +
-    '                                         before card start\n' +
-    '  project list [--json]                  name, path\n' +
-    '\nplaybook (the markdown procedures a card picks from):\n' +
-    '  playbook list [--json]                 playbook ids in <workspace>/.bridge-commander/playbooks/\n' +
-    '                                         (plus the packaged ones not overridden there). Edit a\n' +
-    '                                         playbook and the next card started on it uses the edit\n' +
-    '\nhook (the workspace\'s own executable scripts, in .bridge-commander/hooks/):\n' +
-    '  hook list [--json]                     every hook, its kind and how its last run ended.\n' +
-    '                                         A DIRECTORY in hooks/ is a lifecycle event and its\n' +
-    '                                         files fire on it; a FILE directly in hooks/ is a\n' +
-    '                                         NAMED hook that nothing fires but you\n' +
-    '  hook run <name> [--card <id>] [--trigger <n>]\n' +
-    '                                         run a named hook. The ONE door — an outside trigger\n' +
-    '                                         on this machine, the board\'s ▶ and a schedule all\n' +
-    '                                         come through it. --card fills BC_CARD/BC_WORKTREE/\n' +
-    '                                         BC_BRANCH (empty without it); --trigger is recorded\n' +
-    '                                         on the trace line. A run of a name already in flight\n' +
-    '                                         is refused, naming the one going. Exits with the\n' +
-    '                                         hook\'s own success (1 on a non-zero exit or a timeout)\n' +
-    '  hook runs [<name>] [--limit N] [--json]\n' +
-    '                                         the trace: every run of every hook, lifecycle ones\n' +
-    '                                         included, newest first, read off the TAIL of\n' +
-    '                                         .bridge-commander/hookruns.jsonl\n' +
-    '  A hook is bash with bc-axi on its PATH — there is no hook API. It wakes a lieutenant the\n' +
-    '  way anyone else does: bc-axi event <card> --wake-owner (add --key to poll without spamming)\n' +
-    '\nschedule (the board\'s own clock — a schedule fires a NAMED HOOK, and nothing else):\n' +
-    '  schedule add <name> --hook <h> --when <cron|interval> --owner <lieutenant-id>\n' +
-    '              [--overlap skip|queue|restart] [--catch-up latest|all|none]\n' +
-    '                                         --when is an interval (30s, 5m, 2h, 1d) or a 5-field\n' +
-    '                                         cron expression in LOCAL time ("*/5 * * * *"). A bad\n' +
-    '                                         expression, a hook that is not there and an owner who\n' +
-    '                                         is not a lieutenant are all refused HERE.\n' +
-    '                                         --overlap is what a firing does when the previous one\n' +
-    '                                         is still running; --catch-up is what happens to the\n' +
-    '                                         windows a sleeping laptop missed\n' +
-    '  schedule list [--json]                 every schedule: what it fires, when it fires next,\n' +
-    '                                         and how it last went\n' +
-    '  schedule show <name> [--json]          the same, plus its recent firings off the trace\n' +
-    '  schedule pause <name> / resume <name>  stop the clock for one schedule (resume re-arms it\n' +
-    '                                         at NOW — a pause is not a queue)\n' +
-    '  schedule remove <name>                 forget the schedule; the hook itself is untouched\n' +
-    '  Schedules live in board.json, so a clone of the workspace carries them. A failed firing\n' +
-    '  wakes the schedule\'s OWNER with the hook\'s output — never only a log line\n' +
-    '\nread:\n' +
-    '  board [--json]                         lane + columns + card one-liners (or full JSON)\n' +
-    '  card show <card-id> [--json]           one card: type, owner, attrs, body, events, thread\n' +
-    '  thread <lieutenant:ID|card:ID> [--json] print a conversation thread\n' +
-    '  archived [n] [--json]                  last n archived cards (default 20)\n' +
-    '  kinds [--json]                         print the effective kinds map (built-ins + registered)\n' +
-    '\ncard:\n' +
-    '  card create --title T --owner <lieutenant> [--type plan|implementation|investigation]\n' +
-    '              [--playbook <id>] [--body-file f|-] [--attr k=v]... [--label l]...\n' +
-    '                                         new card (default type: implementation; born in Backlog ONLY).\n' +
-    '                                         The owner mints the id — <PREFIX>-<n>, e.g. MON-14 — from its\n' +
-    '                                         own counter. --playbook names the playbook card start renders\n' +
-    '                                         (playbook list); a card with none cannot start\n' +
-    '  card move <card-id> <column>           lieutenant moves land ONLY in review (the handoff,\n' +
-    '                                         level-1 event); → working is refused (card start does it).\n' +
-    '                                         Captain drags happen in the UI; a captain drag into\n' +
-    '                                         working / review→backlog is an ORDER (queue item), not a move\n' +
-    '  card patch <card-id> [--title T] [--type t] [--playbook <id>] [--owner L] [--body-file f|-] [--attr k=v]...\n' +
-    '                                         update card (k= deletes attr; --playbook picks the playbook,\n' +
-    '                                         --playbook "" clears it; owner reassignable ONLY\n' +
-    '                                         while no worker is bound to the card — else archive and\n' +
-    '                                         recreate); body = the deliverable, rewritten to current\n' +
-    '                                         state before every handoff\n' +
-    '  card archive <card-id> [--reason merged|killed] [--note "..."]\n' +
-    '                                         kill = archive (append-only file, off the board)\n' +
-    '  card restore <card-id> [--note "..."]  resurrect the most recent archived snapshot in full;\n' +
-    '                                         appends a loud level-1 event\n' +
-    '  card start <card-id> [--brief-file f|-] [--resume] [--harness h]\n' +
-    '                                         card.start: ONE atomic op — isolated worktree + real\n' +
-    '                                         worker session (the card\'s playbook, rendered\n' +
-    '                                         against the card AS IT IS NOW, is the launch prompt),\n' +
-    '                                         session/worktree/branch bound to the card, card ->\n' +
-    '                                         Working. Refuses plan cards, Working cards, unregistered\n' +
-    '                                         repos, and cards with no playbook. --resume\n' +
-    '                                         reincarnates the recorded worker (after worker-died);\n' +
-    '                                         it never takes --brief-file (use worker send instead).\n' +
-    '  card park <card-id>                    move a Working card whose worker is absent or DEAD back\n' +
-    '                                         to Backlog (liveness re-checked server-side; a live\n' +
-    '                                         worker refuses — pause it instead). Timeline event\n' +
-    '  card artifact add <card-id> --uri <attachment://id | file://path | path> [--label L]\n' +
-    '                                         promote a file to the card\'s curated artifacts list\n' +
-    '                                         (deliberate — a chat upload alone never does this). Idempotent.\n' +
-    '                                         A bare path resolves against the SERVER\'s cwd, not yours —\n' +
-    '                                         from a worktree pass file://<abs path> or an absolute path\n' +
-    '  card artifact rm <card-id> --uri <...>  remove an artifact entry by uri\n' +
-    '  attach <path> [--json]                 upload a file and print its attachment id + the markdown\n' +
-    '                                         line that shows it. THE way to put an image inside a\n' +
-    '                                         markdown artifact or a card body (a relative path does\n' +
-    '                                         not resolve in either); --json adds name/mime/size\n' +
-    '\nartifact (co-edited files — the captain may have one open RIGHT NOW):\n' +
-    '  artifact read <uri> [--json]           read a card artifact through the board: content on\n' +
-    '                                         stdout, "version: <sha256>" on stderr. A board-owned\n' +
-    '                                         file nobody wrote yet (a hook, a charter) reads as\n' +
-    '                                         empty at version ""\n' +
-    '  artifact write <uri> --file <f|-> --version <sha256|"">\n' +
-    '                                         write it back through the board — the ONLY way to\n' +
-    '                                         write an artifact someone may be editing. An empty\n' +
-    '                                         --version means "no file yet" and creates it. A stale\n' +
-    '                                         --version writes NOTHING and exits 1 (never silent);\n' +
-    '                                         a write that lands updates the captain\'s open editor\n' +
-    '                                         live. Writing the file directly on disk instead skips\n' +
-    '                                         both — see DOCTRINE.md\n' +
-    '  worker send <card-id> "<instructions>" [--text-file f|-]\n' +
-    '                                         hand a LIVE worker new instructions: typed into its\n' +
-    '                                         session with verified submission (run by the lieutenant)\n' +
-    '  worker pause <card-id> [--park] [--expect-exit] [--reason "<how to revive>"]\n' +
-    '                                         DELIBERATE stop: kill the worker session WITHOUT the\n' +
-    '                                         WORKER DIED alarm (worker-paused event); record +\n' +
-    '                                         worktree survive for card start --resume. --park also\n' +
-    '                                         moves the card Working -> Backlog (run by the lieutenant).\n' +
-    '                                         --expect-exit kills NOTHING — for a session ending by\n' +
-    '                                         itself (a worker on a gate, calling from inside)\n' +
-    '\nworker (run by the worker itself, from its worktree):\n' +
-    '  worker signal <card-id> "<milestone>" [--text-file f|-]\n' +
-    '                                         real milestone -> level-2 card event + QueueItem to owner\n' +
-    '  worker done <card-id> --outcome "<what landed>"\n' +
-    '                                         finished: QueueItem wakes the owner; the card does NOT\n' +
-    '                                         move (the lieutenant verifies, then hands off). PR URLs in\n' +
-    '                                         the outcome auto-populate the card\'s prs attribute\n' +
-    '\nevents & chat:\n' +
-    '  event <card-id> [--level 1|2] [--kind K] [--wake-owner] [--key S] [--source N] [--text-file f|-]\n' +
-    '                                         append timeline event. Level 1 rings the captain;\n' +
-    '                                         level 2 = timeline only.\n' +
-    '                                         --wake-owner also queues a card-event item to the card\n' +
-    '                                         owner\'s drain — the door a workflow, cron or CI hook uses\n' +
-    '                                         to wake a lieutenant without interjecting in the thread\n' +
-    '                                         --key <s> makes it at-most-once for this card: a repeat\n' +
-    '                                         of that key writes nothing and wakes nobody (kept 7 days),\n' +
-    '                                         so a polling hook reports the same red check ONCE\n' +
-    '                                         --source <n> names the caller on both the timeline entry\n' +
-    '                                         and the queue item, so a drain says who woke you\n' +
-    '  notify [--kind K] [--text-file f|-]    board-level notification (no card)\n' +
-    '  say <lieutenant:ID|card:ID> [--actor a] [--text-file f|-]\n' +
-    '                                         post a chat message; a card thread\'s interlocutor is\n' +
-    '                                         the owning lieutenant (lieutenant-main says also notify).\n' +
-    '                                         A card-thread say by anyone but the owner (e.g. its\n' +
-    '                                         worker) also queues a worker-said item waking the owner\n' +
-    '\nthe line (the captain\'s voice channel — one holder, server-side):\n' +
-    '  line [--json]                          who holds it now. The captain\'s voice shortcut posts\n' +
-    '                                         {"target":"line"} and names nobody; the line follows\n' +
-    '                                         whoever last spoke to him in a main chat, and falls\n' +
-    '                                         back to the founding lieutenant on a silent board\n' +
-    '  line pass <lieutenant-id> --note "<what he wants from them>"\n' +
-    '                                         hand it over: the receiver is WOKEN with the note\n' +
-    '                                         (a real delivery), and greets him in one line first\n' +
-    '\ndelivery (at-least-once):\n' +
-    '  drain [--lieutenant <id>] [--json]     print pending QueueItems with card context and a\n' +
-    '    next-action hint per item (--json: raw JSON lines). Captain messages, start/rework\n' +
-    '    orders, card-created/moved. Drain never removes: handle the items, then ack the\n' +
-    '    highest seq handled; unacked items re-offer (dedupe by seq)\n' +
-    '  ack <seq>                              commit that seq\'s lieutenant ack cursor\n' +
-    '\nstatus (worker lease; owed/unread are server-derived):\n' +
-    '  status <card-id> [--json]              the card\'s derived status: worker/owed/unread\n' +
-    '  status <card-id> <state> --worker <id> [--ttl <secs>]\n' +
-    '                                         status.set: link worker + state (absent|idle|working|needs-you)\n' +
-    '                                         as a lease; past the TTL (default 600s) working/needs-you\n' +
-    '                                         decays to idle; "status <card-id> absent" unlinks\n' +
-    '\nconfig:\n' +
-    '  config show                            the fleet\'s config.json\n' +
-    '  config session <name>                  the tmux stem for sessions spawned from now on\n' +
-    '  config voices "a,b"                    TTS voice filter for the UI\n' +
-    '\nText/body/charter always via --text-file/--body-file/--charter-file or stdin ("-"), never shell-interpolated.\n' +
-    'The charter is not board state: --charter-file creates lieutenants/<id>/README.md in the workspace\n' +
-    'when it is absent, and never replaces one — edit the file to change a charter.');
-  // The last line of the help screen is the one still on screen when an agent
-  // stops reading: if the running server is behind its checkout, it says so
-  // here. A down server, an unknown commit, or a match all print nothing extra.
-  driftNote().then((n) => die(usage + (n ? '\n\n⚠ ' + n : '')), () => die(usage));
-  }
+// Two screens, one program. The short one is what `bc` prints bare: the verbs a
+// captain uses, and nothing else — dumping the full reference on someone who
+// typed `bc` is how the start instructions got lost in the first place. The
+// long one is the full reference, and `bc help` is how you ask for it.
+function shortUsage() {
+    return (PROG + ' — the bridge-commander fleet.\n' +
+    '\n' +
+    '  ' + PROG + ' start [<dir>]      found the fleet if there is none, bring the board up, print the\n' +
+    '                        URL and the agent roster. No dir = ' + DEFAULT_FLEET + '\n' +
+    '  ' + PROG + ' stop [--all]       stop the board. Agent sessions survive unless --all\n' +
+    '  ' + PROG + ' agents             every lieutenant and worker, its tmux address, and whether\n' +
+    '                        that pane is live right now\n' +
+    '  ' + PROG + ' status             up/down, cards, queue, and the commit the server booted from\n' +
+    '  ' + PROG + ' install            put `bc` on your PATH (a symlink into this checkout)\n' +
+    '\n' +
+    'Flags worth knowing: --session NAME pins the tmux stem (default "' + fleet.DEFAULT_TMUX_SESSION + '", so a\n' +
+    'lieutenant lives at ' + fleet.DEFAULT_TMUX_SESSION + '-lt-<id> and `tmux attach -t` that name works);\n' +
+    '--port N and --host H bind the board; $BC_FLEET points every call at another fleet.\n' +
+    '\n' +
+    'Cards, lieutenants, playbooks, schedules and the rest of the board are the same command:\n' +
+  '`' + PROG + ' help` prints the full reference.');
+}
+function longUsage() {
+return (PROG + ' — the bridge-commander board CLI.\n' +
+  'Fleet: --workspace DIR, else $BC_FLEET, else the nearest .bridge-commander/ from cwd upward, else the\n' +
+  'default fleet at ' + DEFAULT_FLEET + '. Port: the fleet\'s config.json (default 4780), or --port N.\n' +
+  'Bind host: config.json "host" (default 127.0.0.1 loopback), or --host H on init/open. Never 0.0.0.0 — there is no app auth.\n' +
+  '\nserver & workspace:\n' +
+  '  init --name N [--id id] [--charter-file f|-] [--port N] [--host H]\n' +
+  '                                         workspace.init (the teleport): run INSIDE tmux; bootstraps\n' +
+  '                                         .bridge-commander/, boots the server, registers the caller\'s tmux\n' +
+  '                                         session as the founding lieutenant, installs the turn-end hook,\n' +
+  '                                         scaffolds AGENTS.md + captain.md + learnings/, seeds the\n' +
+  '                                         playbooks and symlinks the worker-duties skill. Idempotent\n' +
+  '  init --onboard [--here] [--allow-root] [--port N] [--host H]\n' +
+  '                                         the FIRST run, for a session that is NOT in tmux: refuses a\n' +
+  '                                         code project (naming what it found), continues an existing\n' +
+  '                                         workspace, brings the board up, and leaves lieutenant Bridget\n' +
+  '                                         on it — chartered, spawned in her own tmux session, with a\n' +
+  '                                         welcome message already waiting. Installs nothing. Idempotent:\n' +
+  '                                         a re-run resumes (see `onboarding`). --here overrides the\n' +
+  '                                         refusal for a non-empty folder, --allow-root the refusal\n' +
+  '                                         to launch an agent as uid 0 — ask the person for both\n' +
+  '  onboarding [--json]                    the first-run step the board remembers\n' +
+  '  onboarding set <step> [--note "..."]   advance it: board-up | tools | project | checklist | done\n' +
+  '  install [--dir D] [--force] [--uninstall]\n' +
+  '                                         put `bc` on the PATH: a symlink into\n' +
+  '                                         ' + path.join(os.homedir(), '.local', 'bin') + ' (or --dir D, or $XDG_BIN_HOME),\n' +
+  '                                         pointing at THIS checkout — so updating the checkout updates\n' +
+  '                                         the commands. Nothing is copied, no rc file is edited: a\n' +
+  '                                         directory that is not on your PATH is reported with the one\n' +
+  '                                         line that adds it. Idempotent; needs no fleet\n' +
+  '  start [<dir>] [--session NAME] [--port N] [--host H] [--here] [--allow-root]\n' +
+  '                                         THE entry point. Founds the fleet if there is none, brings the\n' +
+  '                                         board up if it is down, then prints the URL and the agent\n' +
+  '                                         roster. No dir = the default fleet (' + DEFAULT_FLEET + '),\n' +
+  '                                         overridable with <dir>, --workspace or $BC_FLEET. A fleet it\n' +
+  '                                         FOUNDS is named: its tmux sessions are <session>-lt-<id>,\n' +
+  '                                         default "' + fleet.DEFAULT_TMUX_SESSION + '" (--session picks another; a name another\n' +
+  '                                         fleet already claimed gets a suffix rather than a collision)\n' +
+  '  agents [--json]                        the roster: every lieutenant and worker, its tmux address, and\n' +
+  '                                         whether that pane is actually live. Agents are tmux sessions,\n' +
+  '                                         not children of the board — they survive a restart and a fresh\n' +
+  '                                         server adopts them back off the recorded refs\n' +
+  '  open [--port N] [--host H]             start the workspace server if needed (idempotent), print URL.\n' +
+  '                                         Bootstraps .bridge-commander/ in cwd on first run.\n' +
+  '  status [--agents]                      up/down, cards, lieutenants, pending queue items, and the\n' +
+  '                                         commit the server BOOTED from (code=). When the checkout has\n' +
+  '                                         moved past it, one line names both commits and the restart —\n' +
+  '                                         silence means the running server IS the code on disk\n' +
+  '  stop [--all]                           stop the board server, and SAY which agent sessions it left\n' +
+  '                                         running (they survive on purpose). --all ends those too\n' +
+  '\nlieutenant:\n' +
+  '  lieutenant create --name N [--id id] [--color #rrggbb] [--avatar N] [--prefix ABC] [--charter-file f|-] [--spawn [--harness h]]\n' +
+  '                                         register a lieutenant (color auto-assigned when omitted;\n' +
+  '                                         --avatar 0-63 indexes the sprite sheet, omitted = colored-dot\n' +
+  '                                         fallback; --prefix heads the card ids it mints and defaults\n' +
+  '                                         to the first three letters of the name); --spawn births a REAL\n' +
+  '                                         agent session in the workspace root (doctrine + charter as\n' +
+  '                                         launch prompt, ref persisted)\n' +
+  '  lieutenant list [--json]               id, name, color, next card id, harness[:model],\n' +
+  '                                         charter first line\n' +
+  '                                         (the charter is lieutenants/<id>/README.md, the memory file\n' +
+  '                                         the agent is launched on — --charter-file creates it when\n' +
+  '                                         absent and never replaces one)\n' +
+  '  lieutenant patch <id> [--avatar N|none] [--color #rrggbb] [--prefix ABC]\n' +
+  '                        [--harness claude|codex] [--model m|none]\n' +
+  '                                         lieutenant.update: cosmetics + the card-id prefix (refused\n' +
+  '                                         when another lieutenant holds it) — name/id stay immutable.\n' +
+  '                                         --harness MOVES a living lieutenant: kills its session and\n' +
+  '                                         respawns it on the other harness with charter + owned cards\n' +
+  '                                         + pending queue as the prompt (the conversation is lost, the\n' +
+  '                                         queue is not). --model is stored and rides --model on every\n' +
+  '                                         later spawn/resume; `none` = the harness default\n' +
+  '  lieutenant retire <id>                 lieutenant.retire: refuses while the lieutenant owns\n' +
+  '                                         non-archived cards; else kills its session, removes it\n' +
+  '                                         and its queue, level-1 event\n' +
+  '\nproject:\n' +
+  '  project add <git-url|path> [--name n]  clone into <workspace>/projects/<name> and register it;\n' +
+  '                                         a card\'s repo attribute must name a registered project\n' +
+  '                                         before card start\n' +
+  '  project list [--json]                  name, path\n' +
+  '\nplaybook (the markdown procedures a card picks from):\n' +
+  '  playbook list [--json]                 playbook ids in <workspace>/.bridge-commander/playbooks/\n' +
+  '                                         (plus the packaged ones not overridden there). Edit a\n' +
+  '                                         playbook and the next card started on it uses the edit\n' +
+  '\nhook (the workspace\'s own executable scripts, in .bridge-commander/hooks/):\n' +
+  '  hook list [--json]                     every hook, its kind and how its last run ended.\n' +
+  '                                         A DIRECTORY in hooks/ is a lifecycle event and its\n' +
+  '                                         files fire on it; a FILE directly in hooks/ is a\n' +
+  '                                         NAMED hook that nothing fires but you\n' +
+  '  hook run <name> [--card <id>] [--trigger <n>]\n' +
+  '                                         run a named hook. The ONE door — an outside trigger\n' +
+  '                                         on this machine, the board\'s ▶ and a schedule all\n' +
+  '                                         come through it. --card fills BC_CARD/BC_WORKTREE/\n' +
+  '                                         BC_BRANCH (empty without it); --trigger is recorded\n' +
+  '                                         on the trace line. A run of a name already in flight\n' +
+  '                                         is refused, naming the one going. Exits with the\n' +
+  '                                         hook\'s own success (1 on a non-zero exit or a timeout)\n' +
+  '  hook runs [<name>] [--limit N] [--json]\n' +
+  '                                         the trace: every run of every hook, lifecycle ones\n' +
+  '                                         included, newest first, read off the TAIL of\n' +
+  '                                         .bridge-commander/hookruns.jsonl\n' +
+  '  A hook is bash with ' + PROG + ' on its PATH — there is no hook API. It wakes a lieutenant the\n' +
+  '  way anyone else does: ' + PROG + ' event <card> --wake-owner (add --key to poll without spamming)\n' +
+  '\nschedule (the board\'s own clock — a schedule fires a NAMED HOOK, and nothing else):\n' +
+  '  schedule add <name> --hook <h> --when <cron|interval> --owner <lieutenant-id>\n' +
+  '              [--overlap skip|queue|restart] [--catch-up latest|all|none]\n' +
+  '                                         --when is an interval (30s, 5m, 2h, 1d) or a 5-field\n' +
+  '                                         cron expression in LOCAL time ("*/5 * * * *"). A bad\n' +
+  '                                         expression, a hook that is not there and an owner who\n' +
+  '                                         is not a lieutenant are all refused HERE.\n' +
+  '                                         --overlap is what a firing does when the previous one\n' +
+  '                                         is still running; --catch-up is what happens to the\n' +
+  '                                         windows a sleeping laptop missed\n' +
+  '  schedule list [--json]                 every schedule: what it fires, when it fires next,\n' +
+  '                                         and how it last went\n' +
+  '  schedule show <name> [--json]          the same, plus its recent firings off the trace\n' +
+  '  schedule pause <name> / resume <name>  stop the clock for one schedule (resume re-arms it\n' +
+  '                                         at NOW — a pause is not a queue)\n' +
+  '  schedule remove <name>                 forget the schedule; the hook itself is untouched\n' +
+  '  Schedules live in board.json, so a clone of the workspace carries them. A failed firing\n' +
+  '  wakes the schedule\'s OWNER with the hook\'s output — never only a log line\n' +
+  '\nread:\n' +
+  '  board [--json]                         lane + columns + card one-liners (or full JSON)\n' +
+  '  card show <card-id> [--json]           one card: type, owner, attrs, body, events, thread\n' +
+  '  thread <lieutenant:ID|card:ID> [--json] print a conversation thread\n' +
+  '  archived [n] [--json]                  last n archived cards (default 20)\n' +
+  '  kinds [--json]                         print the effective kinds map (built-ins + registered)\n' +
+  '\ncard:\n' +
+  '  card create --title T --owner <lieutenant> [--type plan|implementation|investigation]\n' +
+  '              [--playbook <id>] [--body-file f|-] [--attr k=v]... [--label l]...\n' +
+  '                                         new card (default type: implementation; born in Backlog ONLY).\n' +
+  '                                         The owner mints the id — <PREFIX>-<n>, e.g. MON-14 — from its\n' +
+  '                                         own counter. --playbook names the playbook card start renders\n' +
+  '                                         (playbook list); a card with none cannot start\n' +
+  '  card move <card-id> <column>           lieutenant moves land ONLY in review (the handoff,\n' +
+  '                                         level-1 event); → working is refused (card start does it).\n' +
+  '                                         Captain drags happen in the UI; a captain drag into\n' +
+  '                                         working / review→backlog is an ORDER (queue item), not a move\n' +
+  '  card patch <card-id> [--title T] [--type t] [--playbook <id>] [--owner L] [--body-file f|-] [--attr k=v]...\n' +
+  '                                         update card (k= deletes attr; --playbook picks the playbook,\n' +
+  '                                         --playbook "" clears it; owner reassignable ONLY\n' +
+  '                                         while no worker is bound to the card — else archive and\n' +
+  '                                         recreate); body = the deliverable, rewritten to current\n' +
+  '                                         state before every handoff\n' +
+  '  card archive <card-id> [--reason merged|killed] [--note "..."]\n' +
+  '                                         kill = archive (append-only file, off the board)\n' +
+  '  card restore <card-id> [--note "..."]  resurrect the most recent archived snapshot in full;\n' +
+  '                                         appends a loud level-1 event\n' +
+  '  card start <card-id> [--brief-file f|-] [--resume] [--harness h]\n' +
+  '                                         card.start: ONE atomic op — isolated worktree + real\n' +
+  '                                         worker session (the card\'s playbook, rendered\n' +
+  '                                         against the card AS IT IS NOW, is the launch prompt),\n' +
+  '                                         session/worktree/branch bound to the card, card ->\n' +
+  '                                         Working. Refuses plan cards, Working cards, unregistered\n' +
+  '                                         repos, and cards with no playbook. --resume\n' +
+  '                                         reincarnates the recorded worker (after worker-died);\n' +
+  '                                         it never takes --brief-file (use worker send instead).\n' +
+  '  card park <card-id>                    move a Working card whose worker is absent or DEAD back\n' +
+  '                                         to Backlog (liveness re-checked server-side; a live\n' +
+  '                                         worker refuses — pause it instead). Timeline event\n' +
+  '  card artifact add <card-id> --uri <attachment://id | file://path | path> [--label L]\n' +
+  '                                         promote a file to the card\'s curated artifacts list\n' +
+  '                                         (deliberate — a chat upload alone never does this). Idempotent.\n' +
+  '                                         A bare path resolves against the SERVER\'s cwd, not yours —\n' +
+  '                                         from a worktree pass file://<abs path> or an absolute path\n' +
+  '  card artifact rm <card-id> --uri <...>  remove an artifact entry by uri\n' +
+  '  attach <path> [--json]                 upload a file and print its attachment id + the markdown\n' +
+  '                                         line that shows it. THE way to put an image inside a\n' +
+  '                                         markdown artifact or a card body (a relative path does\n' +
+  '                                         not resolve in either); --json adds name/mime/size\n' +
+  '\nartifact (co-edited files — the captain may have one open RIGHT NOW):\n' +
+  '  artifact read <uri> [--json]           read a card artifact through the board: content on\n' +
+  '                                         stdout, "version: <sha256>" on stderr. A board-owned\n' +
+  '                                         file nobody wrote yet (a hook, a charter) reads as\n' +
+  '                                         empty at version ""\n' +
+  '  artifact write <uri> --file <f|-> --version <sha256|"">\n' +
+  '                                         write it back through the board — the ONLY way to\n' +
+  '                                         write an artifact someone may be editing. An empty\n' +
+  '                                         --version means "no file yet" and creates it. A stale\n' +
+  '                                         --version writes NOTHING and exits 1 (never silent);\n' +
+  '                                         a write that lands updates the captain\'s open editor\n' +
+  '                                         live. Writing the file directly on disk instead skips\n' +
+  '                                         both — see DOCTRINE.md\n' +
+  '  worker send <card-id> "<instructions>" [--text-file f|-]\n' +
+  '                                         hand a LIVE worker new instructions: typed into its\n' +
+  '                                         session with verified submission (run by the lieutenant)\n' +
+  '  worker pause <card-id> [--park] [--expect-exit] [--reason "<how to revive>"]\n' +
+  '                                         DELIBERATE stop: kill the worker session WITHOUT the\n' +
+  '                                         WORKER DIED alarm (worker-paused event); record +\n' +
+  '                                         worktree survive for card start --resume. --park also\n' +
+  '                                         moves the card Working -> Backlog (run by the lieutenant).\n' +
+  '                                         --expect-exit kills NOTHING — for a session ending by\n' +
+  '                                         itself (a worker on a gate, calling from inside)\n' +
+  '\nworker (run by the worker itself, from its worktree):\n' +
+  '  worker signal <card-id> "<milestone>" [--text-file f|-]\n' +
+  '                                         real milestone -> level-2 card event + QueueItem to owner\n' +
+  '  worker done <card-id> --outcome "<what landed>"\n' +
+  '                                         finished: QueueItem wakes the owner; the card does NOT\n' +
+  '                                         move (the lieutenant verifies, then hands off). PR URLs in\n' +
+  '                                         the outcome auto-populate the card\'s prs attribute\n' +
+  '\nevents & chat:\n' +
+  '  event <card-id> [--level 1|2] [--kind K] [--wake-owner] [--key S] [--source N] [--text-file f|-]\n' +
+  '                                         append timeline event. Level 1 rings the captain;\n' +
+  '                                         level 2 = timeline only.\n' +
+  '                                         --wake-owner also queues a card-event item to the card\n' +
+  '                                         owner\'s drain — the door a workflow, cron or CI hook uses\n' +
+  '                                         to wake a lieutenant without interjecting in the thread\n' +
+  '                                         --key <s> makes it at-most-once for this card: a repeat\n' +
+  '                                         of that key writes nothing and wakes nobody (kept 7 days),\n' +
+  '                                         so a polling hook reports the same red check ONCE\n' +
+  '                                         --source <n> names the caller on both the timeline entry\n' +
+  '                                         and the queue item, so a drain says who woke you\n' +
+  '  notify [--kind K] [--text-file f|-]    board-level notification (no card)\n' +
+  '  say <lieutenant:ID|card:ID> [--actor a] [--text-file f|-]\n' +
+  '                                         post a chat message; a card thread\'s interlocutor is\n' +
+  '                                         the owning lieutenant (lieutenant-main says also notify).\n' +
+  '                                         A card-thread say by anyone but the owner (e.g. its\n' +
+  '                                         worker) also queues a worker-said item waking the owner\n' +
+  '\nthe line (the captain\'s voice channel — one holder, server-side):\n' +
+  '  line [--json]                          who holds it now. The captain\'s voice shortcut posts\n' +
+  '                                         {"target":"line"} and names nobody; the line follows\n' +
+  '                                         whoever last spoke to him in a main chat, and falls\n' +
+  '                                         back to the founding lieutenant on a silent board\n' +
+  '  line pass <lieutenant-id> --note "<what he wants from them>"\n' +
+  '                                         hand it over: the receiver is WOKEN with the note\n' +
+  '                                         (a real delivery), and greets him in one line first\n' +
+  '\ndelivery (at-least-once):\n' +
+  '  drain [--lieutenant <id>] [--json]     print pending QueueItems with card context and a\n' +
+  '    next-action hint per item (--json: raw JSON lines). Captain messages, start/rework\n' +
+  '    orders, card-created/moved. Drain never removes: handle the items, then ack the\n' +
+  '    highest seq handled; unacked items re-offer (dedupe by seq)\n' +
+  '  ack <seq>                              commit that seq\'s lieutenant ack cursor\n' +
+  '\nstatus (worker lease; owed/unread are server-derived):\n' +
+  '  status <card-id> [--json]              the card\'s derived status: worker/owed/unread\n' +
+  '  status <card-id> <state> --worker <id> [--ttl <secs>]\n' +
+  '                                         status.set: link worker + state (absent|idle|working|needs-you)\n' +
+  '                                         as a lease; past the TTL (default 600s) working/needs-you\n' +
+  '                                         decays to idle; "status <card-id> absent" unlinks\n' +
+  '\nconfig:\n' +
+  '  config show                            the fleet\'s config.json\n' +
+  '  config session <name>                  the tmux stem for sessions spawned from now on\n' +
+  '  config voices "a,b"                    TTS voice filter for the UI\n' +
+  '\nText/body/charter always via --text-file/--body-file/--charter-file or stdin ("-"), never shell-interpolated.\n' +
+  'The charter is not board state: --charter-file creates lieutenants/<id>/README.md in the workspace\n' +
+  'when it is absent, and never replaces one — edit the file to change a charter.');
+}
+
+// The drift note rides every help screen: the last line an agent reads is the
+// one still on screen when it stops reading, and a server behind its checkout
+// has to say so there. A down server, an unknown commit, or a match print nothing.
+function withDrift(screen, exit) {
+  driftNote().then((n) => exit(screen + (n ? '\n\n⚠ ' + n : '')), () => exit(screen));
+}
+if (cmd === 'help') {
+  // Asked for, so it is an ANSWER: stdout, exit 0. The same text reached by
+  // typing a verb that does not exist is an error, and goes to stderr with 1.
+  withDrift(longUsage(), (s) => console.log(s));
+} else if (!commands[cmd]) {
+  withDrift(SHORT_DOOR ? shortUsage() : longUsage(), die);
 } else if (NO_FLEET && !FLEETLESS.has(cmd)) {
   die(NO_FLEET_MSG);
 } else {

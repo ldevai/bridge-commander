@@ -9,7 +9,8 @@
 #
 # It does two things and says both: put the tool on disk (clone, or update the
 # clone it made last time), and hand off to the tool's own `install`, which
-# symlinks `bc` and `bc-axi` into ~/.local/bin. Nothing else is touched — no
+# symlinks `bc` into ~/.local/bin (and `bc-axi`, the older name the packaged
+# playbooks still call). Nothing else is touched — no
 # shell rc file is edited, no package manager is invoked, and a PATH that does
 # not reach the bin dir is reported rather than fixed behind your back.
 #
@@ -65,8 +66,13 @@ else
   git clone --quiet --branch "$REF" "$REPO_URL" "$CHECKOUT"
 fi
 
+# Hand off through `bc` when it is there, so every message the installer prints
+# names the command the user will actually type. They are the same file.
+BC="$CHECKOUT/cli/bc"
+[ -x "$BC" ] || BC="$CHECKOUT/cli/bc-axi"
+
 echo
 if [ -n "${BC_BIN_DIR:-}" ]; then
-  exec "$CHECKOUT/cli/bc-axi" install --dir "$BC_BIN_DIR"
+  exec "$BC" install --dir "$BC_BIN_DIR"
 fi
-exec "$CHECKOUT/cli/bc-axi" install
+exec "$BC" install

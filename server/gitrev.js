@@ -117,7 +117,7 @@ function driftLine(boot, headNow, restart) {
   if (boot.commit === headNow) return null;
   return 'server is running OLD code — started from ' + short(boot.commit) +
     (boot.dirty ? ' (dirty tree)' : '') + ', repo is now ' + short(headNow) +
-    '. Restart it: ' + (restart || 'bc-axi stop && bc-axi open');
+    '. Restart it: ' + (restart || 'bc stop && bc start');
 }
 
 module.exports = { gitDir, headCommit, isDirty, bootRecord, driftLine, short };

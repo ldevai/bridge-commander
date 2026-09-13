@@ -119,7 +119,9 @@ test('driftLine names both commits and the restart command', () => {
   assert.match(line, /OLD code/);
   assert.match(line, new RegExp(A.slice(0, 7)));
   assert.match(line, new RegExp(B.slice(0, 7)));
-  assert.match(line, /bc-axi stop && bc-axi open/);
+  assert.match(line, /bc stop && bc start/);
+  // …and the caller may spell it the way ITS caller got here.
+  assert.match(gitrev.driftLine({ commit: A }, B, 'bc-axi stop && bc-axi start'), /bc-axi stop && bc-axi start/);
   assert.ok(!line.includes('\n'), 'one line');
   assert.match(gitrev.driftLine({ commit: A, dirty: true }, B), /dirty tree/);
 });
@@ -164,7 +166,7 @@ test('bc-axi status announces drift once the checkout moves past the running ser
     assert.match(r.stdout, /⚠ server is running OLD code/);
     assert.match(r.stdout, /aaaaaaa/);
     assert.match(r.stdout, /bbbbbbb/);
-    assert.match(r.stdout, /bc-axi stop && bc-axi open/);
+    assert.match(r.stdout, /bc-axi stop && bc-axi start/);
   } finally {
     await s.stop();
     fs.rmSync(code, { recursive: true, force: true });
@@ -194,13 +196,13 @@ test('the usage screen carries the drift line, and drops it when the commits mat
   try {
     let r = await runCli(['--workspace', s.dir, '--port', String(s.port)]);
     assert.strictEqual(r.code, 1); // usage always exits 1
-    assert.match(r.stderr, /agent CLI for the bridge-commander board/);
+    assert.match(r.stderr, /the bridge-commander board CLI/);
     assert.ok(!r.stderr.includes('⚠'), 'silent while the commits match');
 
     setHead(code, B);
     r = await runCli(['--workspace', s.dir, '--port', String(s.port)]);
     assert.match(r.stderr, /⚠ server is running OLD code/);
-    assert.match(r.stderr, /bc-axi stop && bc-axi open/);
+    assert.match(r.stderr, /bc-axi stop && bc-axi start/);
   } finally {
     await s.stop();
     fs.rmSync(code, { recursive: true, force: true });
@@ -230,7 +232,7 @@ test('a down server costs the usage screen nothing', async () => {
   try {
     const r = await runCli(['--workspace', dir, '--port', '1']); // nothing listening
     assert.strictEqual(r.code, 1);
-    assert.match(r.stderr, /agent CLI for the bridge-commander board/);
+    assert.match(r.stderr, /the bridge-commander board CLI/);
     assert.ok(!r.stderr.includes('⚠'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

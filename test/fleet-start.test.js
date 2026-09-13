@@ -248,7 +248,7 @@ test('a fleet that never named itself keeps the session names its agents already
   }
 });
 
-test('bc with no fleet anywhere prints the four verbs, not a workspace error', async () => {
+test('bc with no fleet anywhere prints the captain verbs, not a workspace error', async () => {
   const home = tmp('home');
   try {
     const r = await runBc([], fleetEnv(home), home);
@@ -256,9 +256,9 @@ test('bc with no fleet anywhere prints the four verbs, not a workspace error', a
     assert.match(r.stderr, /bc start \[<dir>\]/);
     assert.match(r.stderr, /bc stop \[--all\]/);
     assert.match(r.stderr, /bc agents/);
-    // The agent CLI is not dumped on someone who typed `bc`.
+    // The full reference is not dumped on someone who typed `bc` — it is offered.
     assert.doesNotMatch(r.stderr, /card create --title/);
-    assert.match(r.stderr, /`bc-axi`, the agent CLI/);
+    assert.match(r.stderr, /`bc help` prints the full reference/);
 
     // A verb that needs a fleet refuses with the sentence that makes one.
     const agents = await runBc(['agents'], fleetEnv(home), home);
@@ -423,6 +423,31 @@ test('install.sh installs from the checkout it came from, without cloning a seco
     // The clone destination must be untouched: a second copy is how you end up
     // updating the checkout you are not running.
     assert.ok(!fs.existsSync(path.join(home, '.local', 'share', 'bridge-commander')));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('bc help is the full reference, under the name it was called by, and needs no fleet', async () => {
+  const home = tmp('home');
+  try {
+    const r = await runBc(['help'], fleetEnv(home), home);
+    // Asked for, so it is an answer: stdout, exit 0. A verb that does not exist
+    // prints the same kind of screen as an ERROR — stderr, exit 1.
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.match(r.stdout, /^bc — the bridge-commander board CLI\./);
+    assert.match(r.stdout, /card create --title T --owner/);
+    assert.match(r.stdout, /schedule add <name> --hook/);
+    // Every command in it is spelled with the name the caller used.
+    assert.doesNotMatch(r.stdout, /bc-axi /);
+
+    const flag = await runBc(['--help'], fleetEnv(home), home);
+    assert.strictEqual(flag.code, 0, flag.stderr);
+    assert.strictEqual(flag.stdout, r.stdout);
+
+    const bogus = await runBc(['frobnicate'], fleetEnv(home), home);
+    assert.strictEqual(bogus.code, 1);
+    assert.match(bogus.stderr, /bc start \[<dir>\]/);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }

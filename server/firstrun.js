@@ -82,6 +82,13 @@ function listPhrase(items) {
   return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
 }
 
+// The name the CLI was invoked by — `bc` for a person, `bc-axi` for an agent
+// following the packaged instructions. Every command these texts tell someone to
+// TYPE has to be spelled the way they got here, or the fix is a command they do
+// not have. The CLI sets it once at startup; `bc` is the standing default.
+let PROG = 'bc';
+function setProg(p) { PROG = String(p || '').trim() || 'bc'; }
+
 // The refusal a stranger reads (through their agent). It names what was found,
 // says what a workspace IS, and hands over the one thing to do next. It never
 // tells anyone to run tmux.
@@ -91,7 +98,7 @@ function refusalText(dir, r) {
       + '  ' + dir + '\n\n'
       + 'A Bridge Commander workspace is its own folder, BESIDE your code — never inside it.\n'
       + 'It holds the board, its lieutenants and the worktrees they work in; your repos are\n'
-      + 'registered with it (`bc-axi project add <path-or-url>`), not replaced by it.\n\n'
+      + 'registered with it (`' + PROG + ' project add <path-or-url>`), not replaced by it.\n\n'
       + 'Pick an empty folder, cd into it, and run this again — e.g.\n'
       + '  mkdir ~/myfleet && cd ~/myfleet\n\n'
       + '(If you are certain this folder is meant to BE the workspace, --here says so. Ask first.)';
@@ -203,7 +210,7 @@ function rootBlockText() {
     + '     way that needs no root (curl -fsSL https://claude.ai/install.sh | bash puts it in\n'
     + '     ~/.local/bin — `npm i -g` would fail with EACCES for them), and run this again.\n\n'
     + '  2. This is a throwaway box (a container you will delete) and you accept the risk:\n'
-    + '       bc-axi init --onboard --allow-root\n'
+    + '       ' + PROG + ' start --allow-root\n'
     + '     That launches her with IS_SANDBOX=1, which is the escape hatch claude itself checks.\n'
     + '     It turns off a guard that exists because an agent with skipped permissions running as\n'
     + '     root can do anything to the machine. Never on a box you care about.\n\n'
@@ -357,6 +364,7 @@ const ONBOARDING_STEPS = ['board-up', 'tools', 'project', 'checklist', 'done'];
 
 module.exports = {
   IGNORABLE, MANIFESTS, SOURCE_DIRS, SOURCE_EXT, ONBOARDING_STEPS,
+  setProg,
   isWorkspaceDir, inspectTarget, listPhrase, refusalText,
   hasBin, isRoot, installCommand, tmuxMissingText, gitIdentity, gitIdentityText, portFree,
   rootBlockText, agentMissingText, agentAtHome, handRunLine, diagnoseSpawn,

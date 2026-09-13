@@ -52,8 +52,12 @@ echo "=== SKILL.md step 0: self-bootstrap (what the agent does on first /bridge-
 if [ ! -x ~/.agents/skills/bridge-commander/cli/bc-axi ]; then
   git clone --quiet --branch "$BC_REF" "$BC_REPO_URL" ~/.local/share/bridge-commander || exit 1
 fi
-BC=/root/.local/share/bridge-commander/cli/bc-axi
+BC=/root/.local/share/bridge-commander/cli/bc
 test -x $BC || exit 1
+# `bc` is what the README tells a person to install and run, so the copy on disk
+# has to HAVE it — a packaging step that drops the symlink breaks the documented
+# command while every internal call through bc-axi keeps working.
+test -x /root/.local/share/bridge-commander/cli/bc-axi || exit 1
 test -f /root/.local/share/bridge-commander/FIRST-RUN.md || exit 1
 
 echo "=== FIRST-RUN.md: a code project is refused, naming what it found ==="
@@ -159,7 +163,7 @@ cat > "$TMP/phase-demo.sh" <<'PHASE2'
 #!/bin/bash
 set -ux
 export HOME=/root PATH="/root/.local/bin:/root/bin:$PATH"
-BC=/root/.local/share/bridge-commander/cli/bc-axi
+BC=/root/.local/share/bridge-commander/cli/bc
 cd /root/myfleet
 
 # fake harness: pane command must not be a shell, and the tail must show claude UI signatures
